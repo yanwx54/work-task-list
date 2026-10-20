@@ -136,6 +136,7 @@
 </div>
 
 <!-- ============ 任务详情抽屉 ============ -->
+<div class="sidebar-mask" id="sidebarMask"></div>
 <div class="drawer-mask" id="drawerMask"></div>
 <aside class="drawer" id="drawer" aria-hidden="true">
   <div class="drawer-head">
@@ -144,8 +145,11 @@
   </div>
   <div class="drawer-body" id="drawerBody"></div>
   <div class="drawer-foot">
-    <button class="btn-ghost danger" id="btnDelete"><svg><use href="#i-trash"/></svg>删除任务</button>
-    <button class="btn-primary" id="btnSave">保存</button>
+    <button class="btn-ghost danger" id="btnDelete"><svg><use href="#i-trash"/></svg>删除</button>
+    <div class="foot-right">
+      <button class="btn-ghost" id="btnDuplicate" title="以当前任务为模板新建一条">复制</button>
+      <button class="btn-primary" id="btnSave">保存</button>
+    </div>
   </div>
 </aside>
 
@@ -182,7 +186,10 @@
       <ul>
         <li>列表里点左侧圆圈即可完成任务；点标题打开详情。</li>
         <li>看板视图可以直接把卡片拖到另一列，状态随之改变。</li>
-        <li>快速添加支持「明天 / 后天 / 周五」这类词，会自动识别成截止日期。</li>
+        <li>快速添加支持「明天 / 后天 / 周五 / 下周三 / 10月20日」这类词，会自动识别成截止日期。</li>
+        <li>快速添加里加 <b>!高</b> / <b>!中</b> / <b>!低</b> 可以直接设优先级，例如「明天 !高 提交标书」。</li>
+        <li>详情页底部「复制」可以按当前任务再建一条，适合每周例会这类重复工作。</li>
+        <li>「已完成」清单顶部有「清空已完成」，点两次确认，适合定期归档。</li>
       </ul>
     </div>
   </div>

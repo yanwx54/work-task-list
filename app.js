@@ -162,6 +162,31 @@
     }
   }, 120);
 
+  /* 界面偏好（视图 / 布局 / 筛选 / 排序）单独存，刷新后保持原样 */
+  const PREFS_KEY = 'work-tasks.prefs.v1';
+
+  function loadPrefs() {
+    try {
+      const p = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
+      return {
+        view: VIEW_META[p.view] ? p.view : 'today',
+        layout: p.layout === 'board' ? 'board' : 'list',
+        status: ['all', 'todo', 'doing', 'done'].indexOf(p.status) >= 0 ? p.status : 'all',
+        sort: ['smart', 'due', 'priority', 'created'].indexOf(p.sort) >= 0 ? p.sort : 'smart'
+      };
+    } catch (e) {
+      return { view: 'today', layout: 'list', status: 'all', sort: 'smart' };
+    }
+  }
+
+  function savePrefs() {
+    try {
+      localStorage.setItem(PREFS_KEY, JSON.stringify({
+        view: state.view, layout: state.layout, status: state.status, sort: state.sort
+      }));
+    } catch (e) { /* 忽略 */ }
+  }
+
   /* ---------------- 任务操作 ---------------- */
   function getTask(id) { return state.tasks.find(t => t.id === id); }
 
@@ -259,7 +284,8 @@
     const q = state.search.trim().toLowerCase();
     if (q) {
       list = list.filter(x => {
-        const hay = (x.title + ' ' + x.note + ' ' + x.tags.join(' ')).toLowerCase();
+        const hay = (x.title + ' ' + x.note + ' ' + x.tags.join(' ') + ' ' +
+          x.subs.map(s => s.title).join(' ')).toLowerCase();
         return hay.indexOf(q) >= 0;
       });
     }
@@ -294,6 +320,26 @@
       });
     }
     return arr;
+  }
+
+  function groupByDone(list) {
+    const t = todayStr();
+    const ws = startOfWeek(t);
+    const g = [
+      { label: '今天完成', items: [] },
+      { label: '昨天完成', items: [] },
+      { label: '本周更早', items: [] },
+      { label: '更早', items: [] }
+    ];
+    list.forEach(x => {
+      const d = x.completedAt ? ymd(new Date(x.completedAt)) : null;
+      if (!d) g[3].items.push(x);
+      else if (d === t) g[0].items.push(x);
+      else if (d === addDays(t, -1)) g[1].items.push(x);
+      else if (d >= ws) g[2].items.push(x);
+      else g[3].items.push(x);
+    });
+    return g.filter(x => x.items.length);
   }
 
   function groupByDue(list) {
@@ -502,20 +548,52 @@
       return;
     }
 
-    const grouped = shouldGroup();
-    if (grouped) {
-      const gs = groupByDue(list);
-      el.innerHTML = '<div class="task-list">' + gs.map(g => `
+    let html = '';
+
+    // 已完成视图：顶部给个批量清理入口
+    if (state.view === 'done' && !state.search.trim()) {
+      html += `<div class="bulk-bar">
+        <span>共 ${list.length} 条已完成</span>
+        <button class="btn-ghost danger" id="btnClearDone">清空已完成</button>
+      </div>`;
+    }
+
+    if (shouldGroup()) {
+      const gs = state.view === 'done' ? groupByDone(list) : groupByDue(list);
+      html += '<div class="task-list">' + gs.map(g => `
         <div class="group-head">${g.label} · ${g.items.length}<i></i></div>
         ${g.items.map(taskItemHTML).join('')}
       `).join('') + '</div>';
     } else {
-      el.innerHTML = '<div class="task-list">' + list.map(taskItemHTML).join('') + '</div>';
+      html += '<div class="task-list">' + list.map(taskItemHTML).join('') + '</div>';
+    }
+
+    el.innerHTML = html;
+
+    const clearBtn = $('#btnClearDone');
+    if (clearBtn) {
+      clearBtn.onclick = function () {
+        if (clearBtn.getAttribute('data-armed') === '1') {
+          const doneCount = state.tasks.filter(t => t.status === 'done').length;
+          state.tasks = state.tasks.filter(t => t.status !== 'done');
+          save();
+          renderAll();
+          toast('已清空 ' + doneCount + ' 条已完成任务');
+        } else {
+          clearBtn.setAttribute('data-armed', '1');
+          clearBtn.textContent = '再点一次确认';
+          setTimeout(() => {
+            if (!clearBtn.isConnected) return;
+            clearBtn.removeAttribute('data-armed');
+            clearBtn.textContent = '清空已完成';
+          }, 4000);
+        }
+      };
     }
   }
 
   function shouldGroup() {
-    return state.sort === 'smart' && state.view !== 'today' && state.view !== 'done';
+    return state.sort === 'smart' && state.view !== 'today';
   }
 
   function renderBoard(list) {
@@ -573,6 +651,7 @@
     renderWeekProgress();
     renderHeader();
     renderContent();
+    savePrefs();
   }
 
   /* ---------------- 抽屉 ---------------- */
@@ -918,22 +997,44 @@
     return (text.slice(0, m.index) + ' ' + text.slice(m.index + m[0].length)).replace(/\s+/g, ' ').trim();
   }
 
+  /* 快速添加里的优先级标记：!高 / !中 / !低 */
+  function extractPriority(text) {
+    const map = [['!高', 3], ['!中', 2], ['!低', 1]];
+    for (let i = 0; i < map.length; i++) {
+      const k = map[i][0], p = map[i][1];
+      const idx = text.indexOf(k);
+      if (idx >= 0) {
+        const rest = (text.slice(0, idx) + ' ' + text.slice(idx + k.length)).replace(/\s+/g, ' ').trim();
+        return { p: p, rest: rest };
+      }
+    }
+    return { p: 0, rest: text };
+  }
+
   function quickAdd(raw) {
     const text = (raw || '').trim();
     if (!text) return;
     const r = extractDate(text);
-    const title = r.rest.replace(/^[\s,，、]+|[\s,，、]+$/g, '');
+    const pr = extractPriority(r.rest);
+    const title = pr.rest.replace(/^[\s,，、]+|[\s,，、]+$/g, '');
     if (!title) { toast('请输入任务内容'); return; }
 
-    let cat = state.view.indexOf('cat:') === 0 ? state.view.slice(4) : null;
+    const fromView = state.view;
+    const cat = fromView.indexOf('cat:') === 0 ? fromView.slice(4) : 'other';
     let due = r.due;
-    if (!due && state.view === 'today') due = todayStr();
-    if (!cat) cat = 'other';
+    if (!due && fromView === 'today') due = todayStr();
 
-    addTask({ title: title, cat: cat, due: due });
+    addTask({ title: title, cat: cat, due: due, priority: pr.p });
     $('#quickAdd').value = '';
+
+    // 在「已完成」视图里新建的任务看不见，自动切到未完成清单
+    if (fromView === 'done') {
+      state.view = 'inbox';
+      state.status = 'all';
+    }
+
     renderAll();
-    toast('已添加' + (due ? '，截止 ' + fmtDue(due) : ''));
+    toast('已添加' + (due ? ' · 截止 ' + fmtDue(due) : '') + (pr.p ? ' · 优先级 ' + PRIOS[pr.p].name : ''));
   }
 
   /* ---------------- 导入导出 ---------------- */
@@ -1069,6 +1170,7 @@
       renderAll();
       $('#content').scrollTop = 0;
       $('#sidebar').classList.remove('show');
+      $('#sidebarMask').classList.remove('show');
     });
 
     // 快速添加
@@ -1159,6 +1261,7 @@
       e.preventDefault();
       col.classList.remove('drag-over');
       const id = dragId || (e.dataTransfer && e.dataTransfer.getData('text/plain'));
+      dragId = null;
       if (!id) return;
       const t = getTask(id);
       if (!t) return;
@@ -1173,6 +1276,25 @@
     $('#drawerClose').addEventListener('click', closeDrawer);
     $('#drawerMask').addEventListener('click', closeDrawer);
     $('#btnSave').addEventListener('click', closeDrawer);
+    $('#btnDuplicate').addEventListener('click', () => {
+      const src = getTask(state.editingId);
+      if (!src) return;
+      const copy = addTask({
+        title: src.title + '（副本）',
+        cat: src.cat,
+        priority: src.priority,
+        due: src.due,
+        dueTime: src.dueTime,
+        note: src.note,
+        tags: src.tags.slice(),
+        subs: src.subs.map(s => ({ id: uid(), title: s.title, done: false }))
+      });
+      state.isNew = false;
+      state.editingId = copy.id;
+      renderAll();
+      renderDrawer(copy);
+      toast('已复制为新任务');
+    });
     $('#btnDelete').addEventListener('click', () => {
       const id = state.editingId;
       if (!id) return;
@@ -1200,7 +1322,13 @@
     });
 
     // 移动端菜单
-    $('#btnMenu').addEventListener('click', () => $('#sidebar').classList.toggle('show'));
+    const sidebarMask = $('#sidebarMask');
+    function toggleSidebar(open) {
+      $('#sidebar').classList.toggle('show', open);
+      sidebarMask.classList.toggle('show', open);
+    }
+    $('#btnMenu').addEventListener('click', () => toggleSidebar(!$('#sidebar').classList.contains('show')));
+    sidebarMask.addEventListener('click', () => toggleSidebar(false));
 
     // 快捷键
     document.addEventListener('keydown', e => {
@@ -1246,6 +1374,7 @@
     inited = true;
 
     state.tasks = load();
+    Object.assign(state, loadPrefs());
     bindEvents();
     renderAll();
 
