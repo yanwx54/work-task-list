@@ -34,6 +34,10 @@
   <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2"/></symbol>
   <symbol id="i-tag" viewBox="0 0 24 24"><path d="M20.5 13.5l-7 7-9-9V3.5h8z"/><circle cx="8" cy="8" r="1.4"/></symbol>
   <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></symbol>
+  <symbol id="i-archive" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/><path d="M10 12h4"/></symbol>
+  <symbol id="i-print" viewBox="0 0 24 24"><path d="M6 9V3h12v6"/><rect x="3" y="9" width="18" height="8" rx="2"/><path d="M6 14h12v7H6z"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 1 0-12 0c0 6-2 7-2 7h16s-2-1-2-7"/><path d="M10.5 20a2 2 0 0 0 3 0"/></symbol>
+  <symbol id="i-restore" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></symbol>
 </svg>
 
 <div class="app" id="app">
@@ -71,6 +75,12 @@
         <a class="nav-item" data-view="cat:aftersale"><i class="dot" style="--c:#3B82C4"></i><span>售后支持</span><em data-count="cat:aftersale"></em></a>
         <a class="nav-item" data-view="cat:other"><i class="dot" style="--c:#7C6BD6"></i><span>其他支持</span><em data-count="cat:other"></em></a>
       </div>
+
+      <div class="nav-group">
+        <div class="nav-label">更多</div>
+        <a class="nav-item" data-view="stats"><svg><use href="#i-chart"/></svg><span>分类统计</span></a>
+        <a class="nav-item" data-view="archive"><svg><use href="#i-archive"/></svg><span>归档</span><em data-count="archive"></em></a>
+      </div>
     </nav>
 
     <div class="sidebar-foot">
@@ -86,6 +96,8 @@
         <button class="icon-btn" id="btnExport" title="导出备份（JSON）"><svg><use href="#i-download"/></svg></button>
         <button class="icon-btn" id="btnImport" title="导入备份（JSON）"><svg><use href="#i-upload"/></svg></button>
         <button class="icon-btn" id="btnExportCsv" title="导出表格（CSV）"><svg><use href="#i-chart"/></svg></button>
+        <button class="icon-btn" id="btnPrint" title="打印本周计划（A4）"><svg><use href="#i-print"/></svg></button>
+        <button class="icon-btn" id="btnRemind" title="每日 9 点提醒"><svg><use href="#i-bell"/></svg></button>
         <button class="icon-btn" id="btnHelp" title="使用说明 / 快捷键">?</button>
       </div>
     </div>
@@ -127,6 +139,7 @@
           <option value="due">按截止日期</option>
           <option value="priority">按优先级</option>
           <option value="created">按创建时间</option>
+          <option value="manual">手动排序（可拖动）</option>
         </select>
       </div>
     </section>
@@ -171,6 +184,26 @@
         <li><b>售后支持</b>：现场处理、故障排查、巡检维护、客户回访</li>
         <li><b>其他支持</b>：内部会议、培训、资料整理、临时协调</li>
       </ul>
+
+      <h4>今天首页</h4>
+      <p>「今天」会列出<b>所有还没完成的任务</b>，按 已逾期 / 今天 / 明天 / 未来 7 天 / 更晚 / 没有日期 分组，
+        今天已完成的单独放在最下面。这样打开就是一张完整的工作台，不会漏事。</p>
+
+      <h4>分类统计</h4>
+      <p>看各类工作的任务量占比、完成率、耗时占比。耗时需要在任务详情里填「实际耗时」才有数据，
+        没填的不计入。支持按 本周 / 本月 / 全部 切换。</p>
+
+      <h4>归档</h4>
+      <p>点删除不会真的删，任务会进「归档」，随时能恢复。归档里再点删除才是彻底删除。</p>
+
+      <h4>每日提醒</h4>
+      <p>点左下角铃铛开启。开启后每天 9 点后第一次打开页面，会用系统通知提醒今日待办和逾期任务，一天只提醒一次。
+        <b>注意：页面关着的时候不会推送</b>，这是纯本地应用的限制。</p>
+
+      <h4>打印周计划</h4>
+      <p>点左下角打印机图标，直接生成 A4 纵向的本周计划表，按周一到周日列出每天的任务，
+        可以打印或存成 PDF 带去开会。</p>
+
       <h4>快捷键</h4>
       <table class="keys">
         <tr><td><kbd>N</kbd></td><td>聚焦快速添加</td></tr>
@@ -179,21 +212,26 @@
         <tr><td><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></td><td>详情内切换 待办 / 进行中 / 已完成</td></tr>
         <tr><td><kbd>Ctrl</kbd>+<kbd>Enter</kbd></td><td>详情内保存</td></tr>
       </table>
+
       <h4>数据存在哪</h4>
       <p>全部数据保存在本机浏览器（localStorage），不上传服务器。换电脑或清缓存前，请用左下角
         <b>下载</b> 按钮导出 JSON 备份，需要时用 <b>上传</b> 恢复。</p>
+
       <h4>小技巧</h4>
       <ul>
         <li>列表里点左侧圆圈即可完成任务；点标题打开详情。</li>
         <li>看板视图可以直接把卡片拖到另一列，状态随之改变。</li>
+        <li>排序切到「手动排序」后，可以拖动任务自己排顺序，松手即保存。</li>
         <li>快速添加支持「明天 / 后天 / 周五 / 下周三 / 10月20日」这类词，会自动识别成截止日期。</li>
         <li>快速添加里加 <b>!高</b> / <b>!中</b> / <b>!低</b> 可以直接设优先级，例如「明天 !高 提交标书」。</li>
         <li>详情页底部「复制」可以按当前任务再建一条，适合每周例会这类重复工作。</li>
-        <li>「已完成」清单顶部有「清空已完成」，点两次确认，适合定期归档。</li>
       </ul>
     </div>
   </div>
 </div>
+
+<!-- ============ 打印用 A4 周计划 ============ -->
+<div class="print-sheet" id="printSheet" aria-hidden="true"></div>
 
 <input type="file" id="fileInput" accept=".json,application/json" hidden>
 <script src="app.js"></script>

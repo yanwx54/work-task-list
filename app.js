@@ -27,11 +27,13 @@
   const STATUS_NAME = { todo: '待办', doing: '进行中', done: '已完成' };
 
   const VIEW_META = {
-    today:   { title: '今天',       sub: '聚焦今天要推进的事' },
+    today:   { title: '今天',       sub: '所有未完成的任务都在这里' },
     week:    { title: '未来 7 天',  sub: '提前看到接下来一周的安排' },
     overdue: { title: '已逾期',     sub: '需要尽快处理或调整计划' },
     inbox:   { title: '全部未完成', sub: '所有还没结束的任务' },
     done:    { title: '已完成',     sub: '回看做过的事' },
+    stats:   { title: '分类统计',   sub: '看各类工作的时间投入与完成情况' },
+    archive: { title: '归档',       sub: '删掉的任务都在这儿，随时能翻回来' },
     'cat:bid':       { title: '投标任务', sub: '标书编制 · 报名 · 保证金 · 澄清答疑 · 开标跟进' },
     'cat:presale':   { title: '售前支持', sub: '方案交流 · 技术答疑 · POC 测试 · 演示汇报' },
     'cat:aftersale': { title: '售后支持', sub: '现场处理 · 故障排查 · 巡检维护 · 客户回访' },
@@ -46,6 +48,7 @@
     status: 'all',
     sort: 'smart',
     search: '',
+    statsRange: 'month',
     editingId: null,
     isNew: false,
     lastDeleted: null
@@ -148,6 +151,10 @@
       note: String(t.note || ''),
       tags: Array.isArray(t.tags) ? t.tags.filter(Boolean) : [],
       subs: Array.isArray(t.subs) ? t.subs.map(s => ({ id: s.id || uid(), title: String(s.title || ''), done: !!s.done })) : [],
+      order: typeof t.order === 'number' ? t.order : null,
+      hours: typeof t.hours === 'number' && t.hours >= 0 ? t.hours : null,
+      archived: !!t.archived,
+      archivedAt: t.archivedAt || null,
       createdAt: t.createdAt || Date.now(),
       updatedAt: t.updatedAt || t.createdAt || Date.now(),
       completedAt: t.completedAt || null
@@ -172,17 +179,19 @@
         view: VIEW_META[p.view] ? p.view : 'today',
         layout: p.layout === 'board' ? 'board' : 'list',
         status: ['all', 'todo', 'doing', 'done'].indexOf(p.status) >= 0 ? p.status : 'all',
-        sort: ['smart', 'due', 'priority', 'created'].indexOf(p.sort) >= 0 ? p.sort : 'smart'
+        sort: ['smart', 'due', 'priority', 'created', 'manual'].indexOf(p.sort) >= 0 ? p.sort : 'smart',
+        statsRange: ['week', 'month', 'all'].indexOf(p.statsRange) >= 0 ? p.statsRange : 'month'
       };
     } catch (e) {
-      return { view: 'today', layout: 'list', status: 'all', sort: 'smart' };
+      return { view: 'today', layout: 'list', status: 'all', sort: 'smart', statsRange: 'month' };
     }
   }
 
   function savePrefs() {
     try {
       localStorage.setItem(PREFS_KEY, JSON.stringify({
-        view: state.view, layout: state.layout, status: state.status, sort: state.sort
+        view: state.view, layout: state.layout, status: state.status,
+        sort: state.sort, statsRange: state.statsRange
       }));
     } catch (e) { /* 忽略 */ }
   }
@@ -210,7 +219,39 @@
     return t;
   }
 
-  function removeTask(id) {
+  /* 删除 = 归档，进「归档」清单还能翻回来 */
+  function archiveTask(id) {
+    const t = getTask(id);
+    if (!t) return;
+    t.archived = true;
+    t.archivedAt = Date.now();
+    t.updatedAt = Date.now();
+    save();
+    renderAll();
+    toast('已归档「' + (t.title || '未命名任务') + '」', {
+      label: '撤销',
+      onClick: function () {
+        t.archived = false;
+        t.archivedAt = null;
+        save();
+        renderAll();
+        toast('已恢复到原清单');
+      }
+    });
+  }
+
+  function restoreTask(id) {
+    const t = getTask(id);
+    if (!t) return;
+    t.archived = false;
+    t.archivedAt = null;
+    t.updatedAt = Date.now();
+    save();
+    renderAll();
+    toast('已恢复「' + (t.title || '未命名任务') + '」');
+  }
+
+  function deleteForever(id) {
     const idx = state.tasks.findIndex(t => t.id === id);
     if (idx < 0) return;
     const t = state.tasks[idx];
@@ -218,7 +259,7 @@
     state.lastDeleted = { task: t, index: idx };
     save();
     renderAll();
-    toast('已删除「' + (t.title || '未命名任务') + '」', {
+    toast('已彻底删除「' + (t.title || '未命名任务') + '」', {
       label: '撤销',
       onClick: function () {
         state.tasks.splice(state.lastDeleted.index, 0, state.lastDeleted.task);
@@ -255,22 +296,50 @@
     renderAll();
   }
 
+  /* 手动排序：把 fromId 插到 targetId 前/后，再把当前列表顺序写回 order */
+  function reorderTasks(fromId, targetId, after) {
+    const ids = currentList().map(t => t.id);
+    const from = ids.indexOf(fromId);
+    if (from < 0) return;
+    ids.splice(from, 1);
+    let to = ids.indexOf(targetId);
+    if (to < 0) return;
+    if (after) to += 1;
+    ids.splice(to, 0, fromId);
+
+    ids.forEach((id, i) => {
+      const t = getTask(id);
+      if (t) t.order = i;
+    });
+    save();
+    renderAll();
+  }
+
   /* ---------------- 视图过滤 ---------------- */
   function viewBase(view) {
     const t = todayStr();
     const end = addDays(t, 7);
+    const alive = state.tasks.filter(x => !x.archived);
+
     switch (view) {
-      case 'today':   return state.tasks.filter(x => x.due === t);
-      case 'week':    return state.tasks.filter(x => x.status !== 'done' && x.due && x.due >= t && x.due <= end);
-      case 'overdue': return state.tasks.filter(x => x.status !== 'done' && x.due && x.due < t);
-      case 'inbox':   return state.tasks.filter(x => x.status !== 'done');
-      case 'done':    return state.tasks.filter(x => x.status === 'done');
+      case 'today':
+        // 首页：所有未完成的任务都放出来，另外保留今天已完成的（划线，便于回顾）
+        return alive.filter(x =>
+          x.status !== 'done' ||
+          (x.completedAt && ymd(new Date(x.completedAt)) === t)
+        );
+      case 'week':    return alive.filter(x => x.status !== 'done' && x.due && x.due >= t && x.due <= end);
+      case 'overdue': return alive.filter(x => x.status !== 'done' && x.due && x.due < t);
+      case 'inbox':   return alive.filter(x => x.status !== 'done');
+      case 'done':    return alive.filter(x => x.status === 'done');
+      case 'archive': return state.tasks.filter(x => x.archived);
+      case 'stats':   return [];
       default:
         if (view.indexOf('cat:') === 0) {
           const c = view.slice(4);
-          return state.tasks.filter(x => x.cat === c);
+          return alive.filter(x => x.cat === c);
         }
-        return state.tasks.slice();
+        return alive.slice();
     }
   }
 
@@ -307,6 +376,13 @@
       arr.sort((a, b) => b.priority - a.priority || byDue(a, b) || b.createdAt - a.createdAt);
     } else if (state.sort === 'created') {
       arr.sort((a, b) => b.createdAt - a.createdAt);
+    } else if (state.sort === 'manual') {
+      arr.sort((a, b) => {
+        const ao = a.order == null ? Number.MAX_SAFE_INTEGER : a.order;
+        const bo = b.order == null ? Number.MAX_SAFE_INTEGER : b.order;
+        if (ao !== bo) return ao - bo;
+        return b.createdAt - a.createdAt;
+      });
     } else {
       arr.sort((a, b) => {
         const ad = a.status === 'done' ? 1 : 0, bd = b.status === 'done' ? 1 : 0;
@@ -342,7 +418,7 @@
     return g.filter(x => x.items.length);
   }
 
-  function groupByDue(list) {
+  function groupByDue(list, opts) {
     const t = todayStr();
     const g = [
       { label: '已逾期', items: [] },
@@ -352,7 +428,9 @@
       { label: '更晚', items: [] },
       { label: '没有日期', items: [] }
     ];
+    const doneGroup = { label: '今天已完成', items: [] };
     list.forEach(x => {
+      if (opts && opts.todayView && x.status === 'done') { doneGroup.items.push(x); return; }
       if (!x.due) g[5].items.push(x);
       else if (x.due < t) g[0].items.push(x);
       else if (x.due === t) g[1].items.push(x);
@@ -360,19 +438,27 @@
       else if (x.due <= addDays(t, 7)) g[3].items.push(x);
       else g[4].items.push(x);
     });
-    return g.filter(x => x.items.length);
+    const out = g.filter(x => x.items.length);
+    if (doneGroup.items.length) out.push(doneGroup);
+    return out;
   }
 
   /* ---------------- 渲染：侧边栏计数 ---------------- */
   function counts() {
     const t = todayStr(), end = addDays(t, 7);
-    const open = state.tasks.filter(x => x.status !== 'done');
+    const alive = state.tasks.filter(x => !x.archived);
+    const open = alive.filter(x => x.status !== 'done');
+    const doneToday = alive.filter(x =>
+      x.status === 'done' && x.completedAt && ymd(new Date(x.completedAt)) === t
+    ).length;
+
     const c = {
-      today: open.filter(x => x.due === t).length,
+      today: open.length + doneToday,
       week: open.filter(x => x.due && x.due >= t && x.due <= end).length,
       overdue: open.filter(x => x.due && x.due < t).length,
       inbox: open.length,
-      done: state.tasks.filter(x => x.status === 'done').length
+      done: alive.filter(x => x.status === 'done').length,
+      archive: state.tasks.filter(x => x.archived).length
     };
     CAT_KEYS.forEach(k => { c['cat:' + k] = open.filter(x => x.cat === k).length; });
     return c;
@@ -397,14 +483,15 @@
     const t = todayStr();
     const ws = startOfWeek();
     const wsTs = parseYmd(ws).getTime();
+    const alive = state.tasks.filter(x => !x.archived);
 
-    const todayN = state.tasks.filter(x => x.status !== 'done' && x.due === t).length;
-    const overdueN = state.tasks.filter(x => x.status !== 'done' && x.due && x.due < t).length;
-    const doingN = state.tasks.filter(x => x.status === 'doing').length;
-    const weekDoneN = state.tasks.filter(x => x.status === 'done' && x.completedAt && x.completedAt >= wsTs).length;
+    const openTotal = alive.filter(x => x.status !== 'done').length;
+    const overdueN = alive.filter(x => x.status !== 'done' && x.due && x.due < t).length;
+    const doingN = alive.filter(x => x.status === 'doing').length;
+    const weekDoneN = alive.filter(x => x.status === 'done' && x.completedAt && x.completedAt >= wsTs).length;
 
     const cards = [
-      { n: todayN, label: '今日待办', icon: 'i-sun', c: '#E05A4E', bg: '#FDECEA' },
+      { n: openTotal, label: '待办总数', icon: 'i-inbox', c: '#E05A4E', bg: '#FDECEA' },
       { n: overdueN, label: '已逾期', icon: 'i-alert', c: '#D9463C', bg: '#FCECEA' },
       { n: doingN, label: '进行中', icon: 'i-clock', c: '#E0952E', bg: '#FDF3E4' },
       { n: weekDoneN, label: '本周已完成', icon: 'i-check-circle', c: '#2F9E6F', bg: '#E9F6F0' }
@@ -424,8 +511,9 @@
     const ws = startOfWeek();
     const we = addDays(ws, 6);
     const wsTs = parseYmd(ws).getTime();
-    const done = state.tasks.filter(x => x.status === 'done' && x.completedAt && x.completedAt >= wsTs).length;
-    const left = state.tasks.filter(x => x.status !== 'done' && x.due && x.due >= ws && x.due <= we).length;
+    const alive = state.tasks.filter(x => !x.archived);
+    const done = alive.filter(x => x.status === 'done' && x.completedAt && x.completedAt >= wsTs).length;
+    const left = alive.filter(x => x.status !== 'done' && x.due && x.due >= ws && x.due <= we).length;
     const total = done + left;
     const pct = total ? Math.round(done / total * 100) : 0;
 
@@ -450,6 +538,8 @@
     const prio = PRIOS[t.priority] || PRIOS[0];
     const subDone = t.subs.filter(s => s.done).length;
     const dcls = dueClass(t);
+    const inArchive = state.view === 'archive';
+    const manual = state.sort === 'manual' && state.layout === 'list';
 
     let meta = '';
     if (t.due) {
@@ -458,15 +548,28 @@
     if (t.subs.length) {
       meta += `<span class="t-sub-progress"><svg><use href="#i-check"/></svg>${subDone}/${t.subs.length}</span>`;
     }
+    if (t.hours) {
+      meta += `<span><svg><use href="#i-clock"/></svg>${esc(fmtHours(t.hours))}</span>`;
+    }
     if (t.tags.length) {
       meta += `<span><svg><use href="#i-tag"/></svg>${esc(t.tags.join(' · '))}</span>`;
+    }
+    if (inArchive && t.archivedAt) {
+      meta += `<span>归档于 ${esc(fmtDateTime(t.archivedAt))}</span>`;
     }
     if (t.note) {
       meta += `<span class="t-note">${esc(t.note.replace(/\s+/g, ' '))}</span>`;
     }
 
+    const actions = inArchive
+      ? `<button data-act="restore" title="恢复到原清单"><svg><use href="#i-restore"/></svg></button>
+         <button data-act="delete" title="彻底删除"><svg><use href="#i-trash"/></svg></button>`
+      : `<button data-act="doing" title="标记为进行中"><svg><use href="#i-clock"/></svg></button>
+         <button data-act="archive" title="归档（可在「归档」里找回）"><svg><use href="#i-archive"/></svg></button>`;
+
     return `
-      <div class="task ${t.status === 'done' ? 'done' : ''} ${t.status === 'doing' ? 'doing' : ''}" data-id="${t.id}">
+      <div class="task ${t.status === 'done' ? 'done' : ''} ${t.status === 'doing' ? 'doing' : ''} ${inArchive ? 'archived-item' : ''}"
+           data-id="${t.id}" ${manual ? 'draggable="true"' : ''}>
         <button class="t-check" data-act="toggle" title="${t.status === 'done' ? '标记为未完成' : '标记完成'}"><svg><use href="#i-check"/></svg></button>
         <div class="t-main" data-act="open">
           <div class="t-row1">
@@ -477,11 +580,13 @@
           </div>
           ${meta ? `<div class="t-meta">${meta}</div>` : ''}
         </div>
-        <div class="t-actions">
-          <button data-act="doing" title="标记为进行中"><svg><use href="#i-clock"/></svg></button>
-          <button data-act="del" title="删除"><svg><use href="#i-trash"/></svg></button>
-        </div>
+        <div class="t-actions">${actions}</div>
       </div>`;
+  }
+
+  function fmtHours(h) {
+    if (h == null) return '';
+    return (Math.round(h * 10) / 10) + ' 小时';
   }
 
   function kcardHTML(t) {
@@ -507,10 +612,19 @@
 
   /* ---------------- 渲染：内容区 ---------------- */
   function renderContent() {
-    const list = currentList();
     const el = $('#content');
 
-    if (!state.tasks.length) {
+    // 统计是独立面板，不走任务列表那套
+    if (state.view === 'stats') {
+      el.innerHTML = renderStatsPanel();
+      bindStatsPanel();
+      return;
+    }
+
+    const list = currentList();
+    const liveCount = state.tasks.filter(t => !t.archived).length;
+
+    if (!liveCount && state.view !== 'archive') {
       el.innerHTML = `
         <div class="empty">
           <div class="empty-art"><svg><use href="#i-check-circle"/></svg></div>
@@ -527,11 +641,13 @@
 
     if (!list.length) {
       const searching = state.search.trim();
+      const isArchive = state.view === 'archive';
       el.innerHTML = `
         <div class="empty">
-          <div class="empty-art"><svg><use href="${searching ? '#i-search' : '#i-check-circle'}"/></svg></div>
-          <h3>${searching ? '没有匹配的任务' : '这里已经清空了'}</h3>
-          <p>${searching ? '换个关键词试试，或者清空搜索框。' : '这个清单下暂时没有待办，保持住。'}</p>
+          <div class="empty-art"><svg><use href="${searching ? '#i-search' : isArchive ? '#i-archive' : '#i-check-circle'}"/></svg></div>
+          <h3>${searching ? '没有匹配的任务' : isArchive ? '归档是空的' : '这里已经清空了'}</h3>
+          <p>${searching ? '换个关键词试试，或者清空搜索框。'
+            : isArchive ? '删除的任务会先放到这里，随时能翻回来。' : '这个清单下暂时没有待办，保持住。'}</p>
           <div class="empty-actions">
             ${searching ? '<button class="btn-ghost" id="emptyClear">清空搜索</button>' : '<button class="btn-ghost" id="emptyNew">添加一条任务</button>'}
           </div>
@@ -550,16 +666,18 @@
 
     let html = '';
 
-    // 已完成视图：顶部给个批量清理入口
     if (state.view === 'done' && !state.search.trim()) {
-      html += `<div class="bulk-bar">
-        <span>共 ${list.length} 条已完成</span>
-        <button class="btn-ghost danger" id="btnClearDone">清空已完成</button>
-      </div>`;
+      html += bulkBar('共 ' + list.length + ' 条已完成', 'btnClearDone', '归档这些已完成');
+    }
+    if (state.view === 'archive' && !state.search.trim()) {
+      html += bulkBar('共 ' + list.length + ' 条归档', 'btnClearArchive', '清空归档');
+    }
+    if (state.sort === 'manual' && !state.search.trim()) {
+      html += '<div class="manual-tip"><svg><use href="#i-list"/></svg>拖动任务可调整顺序，松手即保存</div>';
     }
 
     if (shouldGroup()) {
-      const gs = state.view === 'done' ? groupByDone(list) : groupByDue(list);
+      const gs = state.view === 'done' ? groupByDone(list) : groupByDue(list, { todayView: state.view === 'today' });
       html += '<div class="task-list">' + gs.map(g => `
         <div class="group-head">${g.label} · ${g.items.length}<i></i></div>
         ${g.items.map(taskItemHTML).join('')}
@@ -570,30 +688,51 @@
 
     el.innerHTML = html;
 
-    const clearBtn = $('#btnClearDone');
-    if (clearBtn) {
-      clearBtn.onclick = function () {
-        if (clearBtn.getAttribute('data-armed') === '1') {
-          const doneCount = state.tasks.filter(t => t.status === 'done').length;
-          state.tasks = state.tasks.filter(t => t.status !== 'done');
-          save();
-          renderAll();
-          toast('已清空 ' + doneCount + ' 条已完成任务');
-        } else {
-          clearBtn.setAttribute('data-armed', '1');
-          clearBtn.textContent = '再点一次确认';
-          setTimeout(() => {
-            if (!clearBtn.isConnected) return;
-            clearBtn.removeAttribute('data-armed');
-            clearBtn.textContent = '清空已完成';
-          }, 4000);
+    bindBulk('btnClearDone', '归档这些已完成', function () {
+      let n = 0;
+      state.tasks.forEach(t => {
+        if (!t.archived && t.status === 'done') {
+          t.archived = true;
+          t.archivedAt = Date.now();
+          n++;
         }
-      };
-    }
+      });
+      save();
+      renderAll();
+      toast('已归档 ' + n + ' 条已完成任务');
+    });
+
+    bindBulk('btnClearArchive', '清空归档', function () {
+      const n = state.tasks.filter(t => t.archived).length;
+      state.tasks = state.tasks.filter(t => !t.archived);
+      save();
+      renderAll();
+      toast('已彻底删除 ' + n + ' 条归档任务');
+    });
+  }
+
+  function bulkBar(text, btnId, btnText) {
+    return `<div class="bulk-bar"><span>${text}</span>
+      <button class="btn-ghost danger" id="${btnId}">${btnText}</button></div>`;
+  }
+
+  function bindBulk(id, label, action) {
+    const btn = $('#' + id);
+    if (!btn) return;
+    btn.onclick = function () {
+      if (btn.getAttribute('data-armed') === '1') { action(); return; }
+      btn.setAttribute('data-armed', '1');
+      btn.textContent = '再点一次确认';
+      setTimeout(() => {
+        if (!btn.isConnected) return;
+        btn.removeAttribute('data-armed');
+        btn.textContent = label;
+      }, 4000);
+    };
   }
 
   function shouldGroup() {
-    return state.sort === 'smart' && state.view !== 'today';
+    return state.sort === 'smart' && state.layout === 'list' && state.view !== 'archive';
   }
 
   function renderBoard(list) {
@@ -617,6 +756,132 @@
     }).join('') + '</div>';
   }
 
+  /* ---------------- 渲染：分类统计 ---------------- */
+  function statsRangeBounds(range) {
+    const t = todayStr();
+    if (range === 'week') {
+      const from = startOfWeek(t);
+      return { from: from, to: addDays(from, 6), label: '本周 ' + from.slice(5).replace('-', '/') + ' ~ ' + addDays(from, 6).slice(5).replace('-', '/') };
+    }
+    if (range === 'month') {
+      const d = parseYmd(t);
+      const from = ymd(new Date(d.getFullYear(), d.getMonth(), 1));
+      const to = ymd(new Date(d.getFullYear(), d.getMonth() + 1, 0));
+      return { from: from, to: to, label: (d.getMonth() + 1) + ' 月' };
+    }
+    return { from: null, to: null, label: '全部时间' };
+  }
+
+  function renderStatsPanel() {
+    const b = statsRangeBounds(state.statsRange);
+    const alive = state.tasks.filter(x => !x.archived);
+
+    const inRange = alive.filter(x => {
+      if (!b.from) return true;
+      const ref = x.due || ymd(new Date(x.createdAt));
+      return ref >= b.from && ref <= b.to;
+    });
+
+    const total = inRange.length;
+    const doneN = inRange.filter(x => x.status === 'done').length;
+    const doingN = inRange.filter(x => x.status === 'doing').length;
+    const rate = total ? Math.round(doneN / total * 100) : 0;
+    const totalHours = inRange.reduce((s, x) => s + (x.hours || 0), 0);
+    const hasHours = totalHours > 0;
+
+    const byCat = CAT_KEYS.map(k => {
+      const items = inRange.filter(x => x.cat === k);
+      const d = items.filter(x => x.status === 'done').length;
+      const h = items.reduce((s, x) => s + (x.hours || 0), 0);
+      return {
+        k: k,
+        n: items.length,
+        done: d,
+        rate: items.length ? Math.round(d / items.length * 100) : 0,
+        hours: h
+      };
+    });
+
+    const rangeBtn = (key, label) =>
+      `<button data-range="${key}" class="${state.statsRange === key ? 'on' : ''}">${label}</button>`;
+
+    return `
+      <div class="sp-head">
+        <div class="sp-range">
+          ${rangeBtn('week', '本周')}${rangeBtn('month', '本月')}${rangeBtn('all', '全部')}
+        </div>
+        <div class="sp-range-label">${b.label} · 按截止日期归档，无日期的按创建时间</div>
+      </div>
+
+      <div class="sp-summary">
+        <div class="sp-card">
+          <span class="sp-card-label">任务总数</span>
+          <strong>${total}</strong>
+          <span class="sp-card-sub">进行中 ${doingN}</span>
+        </div>
+        <div class="sp-card">
+          <span class="sp-card-label">已完成</span>
+          <strong>${doneN}</strong>
+          <span class="sp-card-sub">未完成 ${total - doneN}</span>
+        </div>
+        <div class="sp-card">
+          <span class="sp-card-label">完成率</span>
+          <strong>${rate}<small>%</small></strong>
+          <div class="sp-mini-bar"><i style="width:${rate}%"></i></div>
+        </div>
+        <div class="sp-card">
+          <span class="sp-card-label">累计耗时</span>
+          <strong>${hasHours ? (Math.round(totalHours * 10) / 10) + '<small>h</small>' : '—'}</strong>
+          <span class="sp-card-sub">${hasHours ? '按任务填写的耗时汇总' : '还没填过耗时'}</span>
+        </div>
+      </div>
+
+      <div class="sp-cats">
+        ${byCat.map(c => {
+          const cat = CATS[c.k];
+          return `
+          <div class="sp-cat">
+            <div class="sp-cat-head">
+              <i class="dot" style="--c:${cat.color}"></i>
+              <b>${cat.name}</b>
+              <span class="sp-cat-num">${c.n} 项</span>
+              <span class="sp-cat-done">完成 ${c.done}/${c.n}</span>
+            </div>
+            <div class="sp-bar-row">
+              <span class="sp-bar-label">任务量</span>
+              <div class="sp-bar"><i style="width:${total ? Math.round(c.n / total * 100) : 0}%;background:${cat.color}"></i></div>
+              <span class="sp-bar-val">${total ? Math.round(c.n / total * 100) : 0}%</span>
+            </div>
+            <div class="sp-bar-row">
+              <span class="sp-bar-label">耗时</span>
+              <div class="sp-bar"><i style="width:${hasHours ? Math.round(c.hours / totalHours * 100) : 0}%;background:${cat.color};opacity:.6"></i></div>
+              <span class="sp-bar-val">${c.hours ? (Math.round(c.hours * 10) / 10) + 'h' : '—'}</span>
+            </div>
+            <div class="sp-cat-rate">
+              <div class="sp-rate-track"><i style="width:${c.rate}%;background:${cat.color}"></i></div>
+              <span>完成率 ${c.rate}%</span>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+
+      <p class="sp-hint">
+        ${hasHours
+          ? '耗时统计来自任务详情里的「实际耗时」，未填写的不计入。'
+          : '想按时间看工作重心，可以在任务详情里填「实际耗时」（单位：小时）。'}
+        这里的统计不含归档任务。
+      </p>`;
+  }
+
+  function bindStatsPanel() {
+    $$('#content .sp-range button').forEach(b => {
+      b.onclick = function () {
+        state.statsRange = b.getAttribute('data-range');
+        renderContent();
+      };
+    });
+  }
+
   /* ---------------- 渲染：头部 ---------------- */
   function renderHeader() {
     const meta = VIEW_META[state.view] || { title: '任务', sub: '' };
@@ -632,10 +897,12 @@
     }
     if (state.search.trim()) {
       sub = '搜索「' + state.search.trim() + '」· 命中 ' + list.length + ' 条';
-    } else if (state.view !== 'today') {
-      sub = sub + ' · 待完成 ' + openN + ' 项' + (doneN ? '，已完成 ' + doneN + ' 项' : '');
+    } else if (state.view === 'stats') {
+      sub = meta.sub;
+    } else if (state.view === 'archive') {
+      sub = meta.sub + ' · 共 ' + list.length + ' 条';
     } else {
-      sub = sub + ' · 待完成 ' + openN + ' 项';
+      sub = sub + ' · 待办 ' + openN + ' 项' + (doneN ? '，已完成 ' + doneN + ' 项' : '');
     }
     $('#viewSub').textContent = sub;
 
@@ -645,6 +912,11 @@
   }
 
   function renderAll() {
+    const isStats = state.view === 'stats';
+    const toolbar = $('.toolbar'), statsBar = $('#stats');
+    if (toolbar) toolbar.style.display = isStats ? 'none' : '';
+    if (statsBar) statsBar.style.display = isStats ? 'none' : '';
+
     renderNav();
     renderCounts();
     renderStats();
@@ -750,6 +1022,15 @@
       </div>
 
       <div class="field">
+        <label class="field-label">实际耗时 <span style="color:#b0b6c0;font-weight:400">用于分类统计</span></label>
+        <div class="hours-row">
+          <input class="field-input" id="dHours" type="number" min="0" step="0.5"
+                 value="${t.hours != null ? t.hours : ''}" placeholder="例如 2.5">
+          <span class="hours-unit">小时</span>
+        </div>
+      </div>
+
+      <div class="field">
         <label class="field-label">子任务 ${t.subs.length ? `<span style="color:#b0b6c0;font-weight:400">${t.subs.filter(s => s.done).length}/${t.subs.length}</span>` : ''}</label>
         <div class="sub-list" id="dSubs">${subsHTML(t)}</div>
         <div class="sub-add">
@@ -770,6 +1051,10 @@
 
     bindDrawer(t);
     autoGrow($('#dTitle'));
+
+    $('#btnDelete').innerHTML = t.archived
+      ? '<svg><use href="#i-trash"/></svg>彻底删除'
+      : '<svg><use href="#i-archive"/></svg>归档';
   }
 
   function subsHTML(t) {
@@ -861,6 +1146,13 @@
 
     $('#dTags').addEventListener('input', function () {
       t.tags = this.value.split(/[,，、]/).map(s => s.trim()).filter(Boolean);
+      touch(t);
+      renderContent();
+    });
+
+    $('#dHours').addEventListener('input', function () {
+      const v = this.value.trim();
+      t.hours = v === '' ? null : Math.max(0, Number(v) || 0);
       touch(t);
       renderContent();
     });
@@ -1057,7 +1349,7 @@
   }
 
   function exportCSV() {
-    const head = ['标题', '分类', '状态', '优先级', '截止日期', '截止时间', '标签', '子任务', '备注', '创建时间', '完成时间'];
+    const head = ['标题', '分类', '状态', '优先级', '截止日期', '截止时间', '实际耗时(小时)', '标签', '子任务', '备注', '创建时间', '完成时间', '是否归档'];
     const rows = state.tasks.map(t => [
       t.title,
       CATS[t.cat].name,
@@ -1065,11 +1357,13 @@
       PRIOS[t.priority].name,
       t.due || '',
       t.dueTime || '',
+      t.hours != null ? t.hours : '',
       t.tags.join(' / '),
       t.subs.map(s => (s.done ? '✓' : '○') + s.title).join(' | '),
       t.note.replace(/\r?\n/g, ' '),
       fmtDateTime(t.createdAt),
-      t.completedAt ? fmtDateTime(t.completedAt) : ''
+      t.completedAt ? fmtDateTime(t.completedAt) : '',
+      t.archived ? '是' : ''
     ]);
     const csv = '\ufeff' + [head].concat(rows).map(r =>
       r.map(v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"').join(',')
@@ -1101,6 +1395,150 @@
       }
     };
     reader.readAsText(file, 'utf-8');
+  }
+
+  /* ---------------- 每日提醒 ---------------- */
+  const REMIND_KEY = 'work-tasks.remind.v1';
+
+  function loadRemind() {
+    try {
+      return Object.assign({ enabled: false, last: null }, JSON.parse(localStorage.getItem(REMIND_KEY) || '{}'));
+    } catch (e) {
+      return { enabled: false, last: null };
+    }
+  }
+
+  function saveRemind(r) {
+    try { localStorage.setItem(REMIND_KEY, JSON.stringify(r)); } catch (e) { /* 忽略 */ }
+  }
+
+  let remind = loadRemind();
+
+  function updateRemindBtn() {
+    const btn = $('#btnRemind');
+    if (!btn) return;
+    const supported = 'Notification' in window;
+    const on = remind.enabled && supported && Notification.permission === 'granted';
+    btn.classList.toggle('active', on);
+    btn.title = !supported
+      ? '当前浏览器不支持桌面通知'
+      : on ? '每日 9 点提醒已开启（点击关闭）' : '开启每日 9 点提醒';
+  }
+
+  function toggleRemind() {
+    if (!('Notification' in window)) {
+      toast('当前浏览器不支持桌面通知');
+      return;
+    }
+    if (remind.enabled) {
+      remind.enabled = false;
+      saveRemind(remind);
+      updateRemindBtn();
+      toast('已关闭每日提醒');
+      return;
+    }
+    Notification.requestPermission().then(function (p) {
+      if (p === 'granted') {
+        remind.enabled = true;
+        remind.last = null;
+        saveRemind(remind);
+        updateRemindBtn();
+        toast('已开启：每天 9 点后打开页面会提醒今日待办');
+        checkRemind(true);
+      } else {
+        toast('通知权限被拒绝，可在地址栏左侧的站点设置里重新允许');
+      }
+    }).catch(function () {
+      toast('无法请求通知权限');
+    });
+  }
+
+  function checkRemind(force) {
+    if (!remind.enabled) return;
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+
+    const now = new Date();
+    if (now.getHours() < 9 && !force) return;   // 9 点前不打扰
+
+    const t = todayStr();
+    if (remind.last === t && !force) return;    // 一天只提醒一次
+
+    const alive = state.tasks.filter(x => !x.archived && x.status !== 'done');
+    const dueToday = alive.filter(x => x.due === t);
+    const overdue = alive.filter(x => x.due && x.due < t);
+    if (!dueToday.length && !overdue.length) return;
+
+    const parts = [];
+    if (dueToday.length) parts.push('今天 ' + dueToday.length + ' 项待办');
+    if (overdue.length) parts.push(overdue.length + ' 项已逾期');
+    const body = parts.join('，') + '\n' +
+      dueToday.concat(overdue).slice(0, 5).map(x => '· ' + x.title).join('\n');
+
+    try {
+      const n = new Notification('今日工作提醒', { body: body, tag: 'work-tasks-daily' });
+      n.onclick = function () { window.focus(); };
+    } catch (e) { /* 某些环境需要 service worker，忽略 */ }
+
+    remind.last = t;
+    saveRemind(remind);
+  }
+
+  /* ---------------- 打印：A4 周计划 ---------------- */
+  function printWeek() {
+    const t = todayStr();
+    const ws = startOfWeek(t);
+    const dayNames = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+    const alive = state.tasks.filter(x => !x.archived);
+
+    const rows = dayNames.map(function (name, i) {
+      const d = addDays(ws, i);
+      const items = alive.filter(x => x.due === d).sort(function (a, b) {
+        if (a.status !== b.status) return a.status === 'done' ? 1 : -1;
+        return (a.dueTime || '99:99') < (b.dueTime || '99:99') ? -1 : 1;
+      });
+      return `
+        <div class="ps-day ${d === t ? 'ps-today' : ''}">
+          <div class="ps-day-head">
+            <b>${name}</b>
+            <span>${d.slice(5).replace('-', '/')}</span>
+            <em>${items.length ? items.length + ' 项' : ''}</em>
+          </div>
+          <div class="ps-day-body">
+            ${items.length ? items.map(x => `
+              <div class="ps-item ${x.status === 'done' ? 'ps-done' : ''}">
+                <i class="ps-box"></i>
+                <span class="ps-time">${x.dueTime || ''}</span>
+                <span class="ps-title">${esc(x.title)}</span>
+                <span class="ps-cat" style="color:${CATS[x.cat].color}">${CATS[x.cat].name}</span>
+              </div>`).join('') : '<div class="ps-empty">—</div>'}
+          </div>
+        </div>`;
+    }).join('');
+
+    const undated = alive.filter(x => !x.due && x.status !== 'done');
+    const openN = alive.filter(x => x.status !== 'done').length;
+
+    $('#printSheet').innerHTML = `
+      <div class="ps-page">
+        <div class="ps-head">
+          <div>
+            <h1>本周工作计划</h1>
+            <p>${ws.replace(/-/g, '/')} — ${addDays(ws, 6).replace(/-/g, '/')}</p>
+          </div>
+          <div class="ps-meta">
+            <span>待办 ${openN} 项</span>
+            <span>打印于 ${fmtDateTime(Date.now())}</span>
+          </div>
+        </div>
+        <div class="ps-grid">${rows}</div>
+        ${undated.length ? `
+          <div class="ps-undated">
+            <b>未排期（${undated.length} 项）</b>
+            ${undated.map(x => `<span>· ${esc(x.title)}</span>`).join('')}
+          </div>` : ''}
+      </div>`;
+
+    window.print();
   }
 
   /* ---------------- 提示 ---------------- */
@@ -1219,7 +1657,9 @@
       const act = btn ? btn.getAttribute('data-act') : null;
 
       if (act === 'toggle') { toggleDone(id); return; }
-      if (act === 'del') { removeTask(id); return; }
+      if (act === 'archive') { archiveTask(id); return; }
+      if (act === 'delete') { deleteForever(id); return; }
+      if (act === 'restore') { restoreTask(id); return; }
       if (act === 'doing') { setStatus(id, 'doing'); return; }
       if (act === 'add-to') {
         openNew({ status: btn.getAttribute('data-status'), cat: state.view.indexOf('cat:') === 0 ? state.view.slice(4) : 'other' });
@@ -1228,48 +1668,96 @@
       openTask(id);
     });
 
-    // 看板拖拽
+    // 拖拽：看板换状态 / 手动排序调整顺序
     const content = $('#content');
+
     content.addEventListener('dragstart', e => {
       const card = e.target.closest('.kcard');
-      if (!card) return;
-      dragId = card.getAttribute('data-id');
-      card.classList.add('dragging');
-      e.dataTransfer.effectAllowed = 'move';
-      try { e.dataTransfer.setData('text/plain', dragId); } catch (err) {}
+      if (card) {
+        dragId = card.getAttribute('data-id');
+        card.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        try { e.dataTransfer.setData('text/plain', dragId); } catch (err) {}
+        return;
+      }
+      const row = e.target.closest('.task[draggable="true"]');
+      if (row) {
+        dragId = row.getAttribute('data-id');
+        row.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        try { e.dataTransfer.setData('text/plain', dragId); } catch (err) {}
+      }
     });
+
     content.addEventListener('dragend', e => {
       const card = e.target.closest('.kcard');
       if (card) card.classList.remove('dragging');
+      const row = e.target.closest('.task');
+      if (row) row.classList.remove('dragging');
       $$('.board-col').forEach(c => c.classList.remove('drag-over'));
+      $$('.task').forEach(el => el.classList.remove('drop-before', 'drop-after'));
       dragId = null;
     });
+
     content.addEventListener('dragover', e => {
+      if (!dragId) return;
+
+      // 看板列
       const col = e.target.closest('.board-col');
-      if (!col || !dragId) return;
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-      $$('.board-col').forEach(c => c.classList.toggle('drag-over', c === col));
+      if (col) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        $$('.board-col').forEach(c => c.classList.toggle('drag-over', c === col));
+        return;
+      }
+
+      // 手动排序：在目标行上标出插入位置
+      const row = e.target.closest('.task');
+      if (row && state.sort === 'manual' && state.layout === 'list') {
+        if (row.getAttribute('data-id') === dragId) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        const rect = row.getBoundingClientRect();
+        const after = e.clientY > rect.top + rect.height / 2;
+        $$('.task').forEach(el => el.classList.remove('drop-before', 'drop-after'));
+        row.classList.add(after ? 'drop-after' : 'drop-before');
+      }
     });
+
     content.addEventListener('dragleave', e => {
       const col = e.target.closest('.board-col');
       if (col && !col.contains(e.relatedTarget)) col.classList.remove('drag-over');
     });
+
     content.addEventListener('drop', e => {
-      const col = e.target.closest('.board-col');
-      if (!col) return;
-      e.preventDefault();
-      col.classList.remove('drag-over');
       const id = dragId || (e.dataTransfer && e.dataTransfer.getData('text/plain'));
-      dragId = null;
-      if (!id) return;
-      const t = getTask(id);
-      if (!t) return;
-      const s = col.getAttribute('data-status');
-      if (t.status !== s) {
-        setStatus(id, s);
-        toast('已移到「' + STATUS_NAME[s] + '」');
+      const col = e.target.closest('.board-col');
+
+      // 看板：换状态
+      if (col) {
+        e.preventDefault();
+        col.classList.remove('drag-over');
+        dragId = null;
+        if (!id) return;
+        const t = getTask(id);
+        if (!t) return;
+        const s = col.getAttribute('data-status');
+        if (t.status !== s) {
+          setStatus(id, s);
+          toast('已移到「' + STATUS_NAME[s] + '」');
+        }
+        return;
       }
+
+      // 列表：手动排序
+      const row = e.target.closest('.task');
+      if (!row || !id || state.sort !== 'manual') { dragId = null; return; }
+      e.preventDefault();
+      const after = row.classList.contains('drop-after');
+      const targetId = row.getAttribute('data-id');
+      dragId = null;
+      $$('.task').forEach(el => el.classList.remove('drop-before', 'drop-after'));
+      if (targetId && targetId !== id) reorderTasks(id, targetId, after);
     });
 
     // 抽屉
@@ -1296,18 +1784,22 @@
       toast('已复制为新任务');
     });
     $('#btnDelete').addEventListener('click', () => {
-      const id = state.editingId;
-      if (!id) return;
+      const t = getTask(state.editingId);
+      if (!t) return;
+      const wasArchived = t.archived;
       state.editingId = null;
       state.isNew = false;
       $('#drawerMask').classList.remove('show');
       $('#drawer').classList.remove('show');
-      removeTask(id);
+      if (wasArchived) deleteForever(t.id);
+      else archiveTask(t.id);
     });
 
     // 导出导入
     $('#btnExport').addEventListener('click', exportJSON);
     $('#btnExportCsv').addEventListener('click', exportCSV);
+    $('#btnPrint').addEventListener('click', printWeek);
+    $('#btnRemind').addEventListener('click', toggleRemind);
     $('#btnImport').addEventListener('click', () => $('#fileInput').click());
     $('#fileInput').addEventListener('change', function () {
       if (this.files && this.files[0]) importJSON(this.files[0]);
@@ -1375,14 +1867,18 @@
 
     state.tasks = load();
     Object.assign(state, loadPrefs());
+    remind = loadRemind();
     bindEvents();
     renderAll();
+    updateRemindBtn();
+    checkRemind();
 
-    // 跨零点时刷新“今天”
+    // 每分钟检查一次：跨零点刷新「今天」，到点发提醒
     let lastDay = todayStr();
     setInterval(() => {
       const d = todayStr();
       if (d !== lastDay) { lastDay = d; renderAll(); }
+      checkRemind();
     }, 60000);
   }
 
