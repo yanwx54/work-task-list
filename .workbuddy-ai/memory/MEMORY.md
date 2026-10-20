@@ -15,9 +15,15 @@
 Project09 是 Flask + SQLite 的本地台账（重，带报表和工时统计）；
 本项目是轻量任务清单（轻，能发布成静态链接）。两者不要混用技术栈。
 
-## 发布
-线上链接：https://966a6c118047494f9fd049896f367839.sg.agentos-app.run
-改动后在本地自检通过即重新发布，不用每次征求同意。
+## 发布与仓库
+- 线上链接：https://5d2202a005cf46399d82894c059d8c00.sg.agentos-app.run
+- Git 仓库：https://github.com/yanwx54/work-task-list （public，main）
+- 改动后在本地自检通过即重新发布，不用每次征求同意。
+- ⚠️ 重新发布会换域名，旧链接失效；发完记得把新链接同步到用户和本文件。
+
+## 数据键名
+- 任务数据：`work-tasks.v1`
+- 界面偏好（视图/布局/筛选/排序）：`work-tasks.prefs.v1`
 
 ## 自检方式
 本机有 chromium（`C:/Users/yanwx/AppData/Local/ms-playwright/chromium-1200/chrome-win64/chrome.exe`）
