@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>任务清单 · 投标 / 售前 / 售后 / 其他</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23E05A4E'/><path d='M9 16.5l4.5 4.5L23 11' stroke='%23fff' stroke-width='3.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ============ 图标库 ============ -->
+<svg style="display:none" aria-hidden="true">
+  <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M3 13h4l2 3h6l2-3h4"/><path d="M5.5 5h13l2.5 8v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4z"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"/></symbol>
+  <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 16.5v.5"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M4 12.5l5 5L20 6.5"/></symbol>
+  <symbol id="i-check-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12.2l2.6 2.6L16 9.4"/></symbol>
+  <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.6 6.1.8-4.5 4.2 1.2 6-5.4-3-5.4 3 1.2-6L3.3 9.9l6.1-.8z"/></symbol>
+  <symbol id="i-flag" viewBox="0 0 24 24"><path d="M5 21V4M5 4h9l-1.2 3.2L14 10.5H5"/></symbol>
+  <symbol id="i-doc" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-8 8H8l-4 3v-5.5A8 8 0 0 1 13 4a8 8 0 0 1 8 8z"/></symbol>
+  <symbol id="i-tool" viewBox="0 0 24 24"><path d="M14.5 5.5a4.5 4.5 0 0 0 5.6 5.9l-9 9a2.5 2.5 0 0 1-3.5-3.5l9-9a4.5 4.5 0 0 0-2.1-2.4z"/></symbol>
+  <symbol id="i-dots" viewBox="0 0 24 24"><circle cx="6" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="18" cy="12" r="1.6"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></symbol>
+  <symbol id="i-board" viewBox="0 0 24 24"><rect x="3" y="4" width="5" height="16" rx="1.5"/><rect x="9.5" y="4" width="5" height="11" rx="1.5"/><rect x="16" y="4" width="5" height="14" rx="1.5"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12M7.5 10.5L12 15l4.5-4.5M4 20h16"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4M7.5 8.5L12 4l4.5 4.5M4 20h16"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2"/></symbol>
+  <symbol id="i-tag" viewBox="0 0 24 24"><path d="M20.5 13.5l-7 7-9-9V3.5h8z"/><circle cx="8" cy="8" r="1.4"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></symbol>
+</svg>
+
+<div class="app" id="app">
+
+  <!-- ============ 侧边栏 ============ -->
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="brand-mark"><svg><use href="#i-check"/></svg></div>
+      <div class="brand-text">
+        <div class="brand-title">我的任务清单</div>
+        <div class="brand-sub">投标 · 售前 · 售后 · 其他</div>
+      </div>
+    </div>
+
+    <div class="quick-add">
+      <svg class="qa-icon"><use href="#i-plus"/></svg>
+      <input id="quickAdd" type="text" placeholder="添加任务，回车确认" autocomplete="off">
+      <button class="qa-submit" id="quickAddBtn" title="添加">↵</button>
+    </div>
+
+    <nav class="nav" id="nav">
+      <div class="nav-group">
+        <div class="nav-label">智能清单</div>
+        <a class="nav-item" data-view="today"><svg><use href="#i-sun"/></svg><span>今天</span><em data-count="today"></em></a>
+        <a class="nav-item" data-view="week"><svg><use href="#i-calendar"/></svg><span>未来 7 天</span><em data-count="week"></em></a>
+        <a class="nav-item" data-view="overdue"><svg><use href="#i-alert"/></svg><span>已逾期</span><em data-count="overdue"></em></a>
+        <a class="nav-item" data-view="inbox"><svg><use href="#i-inbox"/></svg><span>全部未完成</span><em data-count="inbox"></em></a>
+        <a class="nav-item" data-view="done"><svg><use href="#i-check-circle"/></svg><span>已完成</span><em data-count="done"></em></a>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-label">我的清单</div>
+        <a class="nav-item" data-view="cat:bid"><i class="dot" style="--c:#E05A4E"></i><span>投标任务</span><em data-count="cat:bid"></em></a>
+        <a class="nav-item" data-view="cat:presale"><i class="dot" style="--c:#E0952E"></i><span>售前支持</span><em data-count="cat:presale"></em></a>
+        <a class="nav-item" data-view="cat:aftersale"><i class="dot" style="--c:#3B82C4"></i><span>售后支持</span><em data-count="cat:aftersale"></em></a>
+        <a class="nav-item" data-view="cat:other"><i class="dot" style="--c:#7C6BD6"></i><span>其他支持</span><em data-count="cat:other"></em></a>
+      </div>
+    </nav>
+
+    <div class="sidebar-foot">
+      <div class="progress-card" id="progressCard">
+        <div class="pc-top">
+          <span>本周完成</span>
+          <strong id="weekDoneNum">0</strong>
+        </div>
+        <div class="pc-bar"><i id="weekBar"></i></div>
+        <div class="pc-sub" id="weekDoneSub">本周还没有完成任务</div>
+      </div>
+      <div class="foot-actions">
+        <button class="icon-btn" id="btnExport" title="导出备份（JSON）"><svg><use href="#i-download"/></svg></button>
+        <button class="icon-btn" id="btnImport" title="导入备份（JSON）"><svg><use href="#i-upload"/></svg></button>
+        <button class="icon-btn" id="btnExportCsv" title="导出表格（CSV）"><svg><use href="#i-chart"/></svg></button>
+        <button class="icon-btn" id="btnHelp" title="使用说明 / 快捷键">?</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ============ 主区域 ============ -->
+  <main class="main">
+    <header class="topbar">
+      <button class="icon-btn only-mobile" id="btnMenu" title="菜单"><svg><use href="#i-list"/></svg></button>
+      <div class="topbar-title">
+        <h1 id="viewTitle">今天</h1>
+        <p id="viewSub"></p>
+      </div>
+      <div class="topbar-tools">
+        <button class="btn-primary" id="btnNew">+ 新建任务</button>
+        <div class="search-box">
+          <svg><use href="#i-search"/></svg>
+          <input id="search" type="text" placeholder="搜索任务 / 标签" autocomplete="off">
+        </div>
+        <div class="seg" id="layoutSeg">
+          <button data-layout="list" class="on" title="列表视图"><svg><use href="#i-list"/></svg></button>
+          <button data-layout="board" title="看板视图"><svg><use href="#i-board"/></svg></button>
+        </div>
+      </div>
+    </header>
+
+    <section class="stats" id="stats"></section>
+
+    <section class="toolbar">
+      <div class="filters" id="filters">
+        <button class="chip on" data-status="all">全部</button>
+        <button class="chip" data-status="todo">待办</button>
+        <button class="chip" data-status="doing">进行中</button>
+        <button class="chip" data-status="done">已完成</button>
+      </div>
+      <div class="toolbar-right">
+        <select id="sortBy" title="排序方式">
+          <option value="smart">智能排序</option>
+          <option value="due">按截止日期</option>
+          <option value="priority">按优先级</option>
+          <option value="created">按创建时间</option>
+        </select>
+      </div>
+    </section>
+
+    <section class="content" id="content"></section>
+  </main>
+</div>
+
+<!-- ============ 任务详情抽屉 ============ -->
+<div class="drawer-mask" id="drawerMask"></div>
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <div class="drawer-head">
+    <div class="drawer-crumb" id="drawerCrumb">任务详情</div>
+    <button class="icon-btn" id="drawerClose" title="关闭（Esc）"><svg><use href="#i-close"/></svg></button>
+  </div>
+  <div class="drawer-body" id="drawerBody"></div>
+  <div class="drawer-foot">
+    <button class="btn-ghost danger" id="btnDelete"><svg><use href="#i-trash"/></svg>删除任务</button>
+    <button class="btn-primary" id="btnSave">保存</button>
+  </div>
+</aside>
+
+<!-- ============ 提示条 ============ -->
+<div class="toast" id="toast"></div>
+
+<!-- ============ 帮助弹窗 ============ -->
+<div class="modal-mask" id="helpMask">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>使用说明</h3>
+      <button class="icon-btn" id="helpClose"><svg><use href="#i-close"/></svg></button>
+    </div>
+    <div class="modal-body">
+      <h4>四类工作清单</h4>
+      <ul>
+        <li><b>投标任务</b>：标书编制、报名、保证金、澄清答疑、开标跟进</li>
+        <li><b>售前支持</b>：方案交流、技术答疑、POC 测试、演示汇报</li>
+        <li><b>售后支持</b>：现场处理、故障排查、巡检维护、客户回访</li>
+        <li><b>其他支持</b>：内部会议、培训、资料整理、临时协调</li>
+      </ul>
+      <h4>快捷键</h4>
+      <table class="keys">
+        <tr><td><kbd>N</kbd></td><td>聚焦快速添加</td></tr>
+        <tr><td><kbd>/</kbd></td><td>聚焦搜索</td></tr>
+        <tr><td><kbd>Esc</kbd></td><td>关闭详情 / 取消搜索</td></tr>
+        <tr><td><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></td><td>详情内切换 待办 / 进行中 / 已完成</td></tr>
+        <tr><td><kbd>Ctrl</kbd>+<kbd>Enter</kbd></td><td>详情内保存</td></tr>
+      </table>
+      <h4>数据存在哪</h4>
+      <p>全部数据保存在本机浏览器（localStorage），不上传服务器。换电脑或清缓存前，请用左下角
+        <b>下载</b> 按钮导出 JSON 备份，需要时用 <b>上传</b> 恢复。</p>
+      <h4>小技巧</h4>
+      <ul>
+        <li>列表里点左侧圆圈即可完成任务；点标题打开详情。</li>
+        <li>看板视图可以直接把卡片拖到另一列，状态随之改变。</li>
+        <li>快速添加支持「明天 / 后天 / 周五」这类词，会自动识别成截止日期。</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<input type="file" id="fileInput" accept=".json,application/json" hidden>
+<script src="app.js"></script>
+</body>
+</html>
