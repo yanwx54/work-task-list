@@ -99,8 +99,11 @@
     else if (diff === 1) label = '明天';
     else if (diff === 2) label = '后天';
     else if (diff === -1) label = '昨天';
-    else if (diff > 2 && diff < 7) label = '周' + weekdayCN(due);
-    else if (parseYmd(due).getFullYear() === new Date().getFullYear()) {
+    else if (diff > 2 && diff < 7) {
+      // 同一周内直接写「周四」，跨到下一周写「下周四」，避免误读成本周
+      const sameWeek = startOfWeek(due) === startOfWeek(t);
+      label = (sameWeek ? '周' : '下周') + weekdayCN(due);
+    } else if (parseYmd(due).getFullYear() === new Date().getFullYear()) {
       label = (parseYmd(due).getMonth() + 1) + '月' + parseYmd(due).getDate() + '日';
     } else {
       label = due.replace(/-/g, '/');
@@ -125,6 +128,78 @@
   }
 
   /* ---------------- 存储 ---------------- */
+  const BACKUP_KEY = 'work-tasks.backup.v1';
+  const BACKUP_MAX = 3;
+
+  function loadBackups() {
+    try {
+      const arr = JSON.parse(localStorage.getItem(BACKUP_KEY) || '[]');
+      return Array.isArray(arr) ? arr : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  /* 每天首次打开存一份快照，留最近 3 天，防误清缓存 / 数据损坏 */
+  let backupDone = false;
+
+  function saveBackup() {
+    if (backupDone) return;
+    if (!state.tasks.length) return;
+    try {
+      const today = todayStr();
+      const list = loadBackups();
+      if (list.length && list[0].date === today) { backupDone = true; return; }
+      list.unshift({ at: Date.now(), date: today, count: state.tasks.length, tasks: state.tasks });
+      localStorage.setItem(BACKUP_KEY, JSON.stringify(list.slice(0, BACKUP_MAX)));
+      backupDone = true;
+    } catch (e) {
+      /* 空间不够就算了，不能影响主流程 */
+    }
+  }
+
+  function restoreBackup(index) {
+    const list = loadBackups();
+    const b = list[index];
+    if (!b || !Array.isArray(b.tasks)) { toast('没有可用的备份'); return; }
+    const have = new Set(state.tasks.map(t => t.id));
+    let added = 0;
+    b.tasks.forEach(raw => {
+      const n = normalizeTask(raw);
+      if (n && !have.has(n.id)) { state.tasks.push(n); added++; }
+    });
+    save();
+    renderAll();
+    toast(added ? '已从 ' + b.date + ' 的快照恢复 ' + added + ' 条任务' : '快照里的任务都还在，无需恢复');
+  }
+
+  function renderBackupInfo() {
+    const list = loadBackups();
+    const info = $('#backupInfo');
+    const actions = $('#backupActions');
+    if (!info || !actions) return;
+
+    if (!list.length) {
+      info.textContent = '还没有快照。每天首次打开会自动存一份，保留最近 3 份。';
+      actions.innerHTML = '';
+      return;
+    }
+
+    info.innerHTML = '每天首次打开会自动存一份快照，保留最近 3 份。当前有：<br>' +
+      list.map(b => '· ' + esc(b.date) + '　' + b.count + ' 条任务').join('<br>');
+
+    actions.innerHTML = list.map((b, i) =>
+      `<button class="btn-ghost" data-restore="${i}" style="margin:8px 8px 0 0;height:28px;font-size:12px">恢复 ${esc(b.date)}</button>`
+    ).join('');
+
+    actions.querySelectorAll('[data-restore]').forEach(btn => {
+      btn.onclick = function () {
+        restoreBackup(Number(btn.getAttribute('data-restore')));
+        $('#helpMask').classList.remove('show');
+      };
+    });
+  }
+
   function load() {
     try {
       const raw = localStorage.getItem(STORE_KEY);
@@ -133,7 +208,12 @@
       const list = Array.isArray(data) ? data : (data && data.tasks) || [];
       return list.map(normalizeTask).filter(Boolean);
     } catch (e) {
-      console.warn('读取本地数据失败', e);
+      console.warn('读取本地数据失败，尝试从备份恢复', e);
+      const list = loadBackups();
+      if (list.length && Array.isArray(list[0].tasks)) {
+        console.warn('已使用 ' + list[0].date + ' 的快照');
+        return list[0].tasks.map(normalizeTask).filter(Boolean);
+      }
       return [];
     }
   }
@@ -167,6 +247,7 @@
     } catch (e) {
       toast('保存失败：浏览器存储空间可能已满');
     }
+    saveBackup();
   }, 120);
 
   /* 界面偏好（视图 / 布局 / 筛选 / 排序）单独存，刷新后保持原样 */
@@ -533,6 +614,19 @@
     return '';
   }
 
+  /* 搜索命中词高亮（先转义再替换，避免把用户输入当 HTML） */
+  function hl(text) {
+    const safe = esc(text);
+    const q = state.search.trim();
+    if (!q) return safe;
+    const qq = esc(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    try {
+      return safe.replace(new RegExp('(' + qq + ')', 'gi'), '<mark class="hl">$1</mark>');
+    } catch (e) {
+      return safe;
+    }
+  }
+
   function taskItemHTML(t) {
     const cat = CATS[t.cat];
     const prio = PRIOS[t.priority] || PRIOS[0];
@@ -558,7 +652,7 @@
       meta += `<span>归档于 ${esc(fmtDateTime(t.archivedAt))}</span>`;
     }
     if (t.note) {
-      meta += `<span class="t-note">${esc(t.note.replace(/\s+/g, ' '))}</span>`;
+      meta += `<span class="t-note">${hl(t.note.replace(/\s+/g, ' '))}</span>`;
     }
 
     const actions = inArchive
@@ -573,7 +667,7 @@
         <button class="t-check" data-act="toggle" title="${t.status === 'done' ? '标记为未完成' : '标记完成'}"><svg><use href="#i-check"/></svg></button>
         <div class="t-main" data-act="open">
           <div class="t-row1">
-            <span class="t-title">${esc(t.title) || '<span style="color:#b0b6c0">未命名任务</span>'}</span>
+            <span class="t-title">${t.title ? hl(t.title) : '<span style="color:#b0b6c0">未命名任务</span>'}</span>
             ${t.priority ? `<span class="t-prio-tag" style="--pc:${prio.color};--pb:${prio.bg}">${prio.name}</span>` : ''}
             <span class="t-badge" style="--bc:${cat.color};--bc-bg:${cat.bg}">${cat.name}</span>
             ${t.status === 'doing' ? '<span class="t-badge" style="--bc:#B6741B;--bc-bg:#FDF3E4">进行中</span>' : ''}
@@ -604,7 +698,7 @@
       <div class="kcard ${t.status === 'done' ? 'done' : ''}" data-id="${t.id}" draggable="true">
         <div class="k-top">
           ${t.priority ? `<i class="k-prio" style="--pc:${prio.color}" title="优先级：${prio.name}"></i>` : ''}
-          <div class="k-title">${esc(t.title) || '<span style="color:#b0b6c0">未命名任务</span>'}</div>
+          <div class="k-title">${t.title ? hl(t.title) : '<span style="color:#b0b6c0">未命名任务</span>'}</div>
         </div>
         <div class="k-meta">${meta}</div>
       </div>`;
@@ -732,7 +826,8 @@
   }
 
   function shouldGroup() {
-    return state.sort === 'smart' && state.layout === 'list' && state.view !== 'archive';
+    return state.sort === 'smart' && state.layout === 'list' &&
+      state.view !== 'archive' && !state.search.trim();
   }
 
   function renderBoard(list) {
@@ -776,9 +871,12 @@
     const b = statsRangeBounds(state.statsRange);
     const alive = state.tasks.filter(x => !x.archived);
 
+    // 口径：已完成的按完成时间算，未完成的按截止日期算，都没有的按创建时间
     const inRange = alive.filter(x => {
       if (!b.from) return true;
-      const ref = x.due || ymd(new Date(x.createdAt));
+      let ref;
+      if (x.status === 'done' && x.completedAt) ref = ymd(new Date(x.completedAt));
+      else ref = x.due || ymd(new Date(x.createdAt));
       return ref >= b.from && ref <= b.to;
     });
 
@@ -810,7 +908,7 @@
         <div class="sp-range">
           ${rangeBtn('week', '本周')}${rangeBtn('month', '本月')}${rangeBtn('all', '全部')}
         </div>
-        <div class="sp-range-label">${b.label} · 按截止日期归档，无日期的按创建时间</div>
+        <div class="sp-range-label">${b.label} · 已完成按完成时间算，未完成按截止日期算</div>
       </div>
 
       <div class="sp-summary">
@@ -913,9 +1011,14 @@
 
   function renderAll() {
     const isStats = state.view === 'stats';
+    const liveCount = state.tasks.filter(t => !t.archived).length;
+    // 统计面板自己就是统计；归档清单不再按状态筛选；没有数据时也不必摆一堆 0
+    const hideToolbar = isStats || state.view === 'archive' || liveCount === 0;
+    const hideStatsBar = isStats || liveCount === 0;
+
     const toolbar = $('.toolbar'), statsBar = $('#stats');
-    if (toolbar) toolbar.style.display = isStats ? 'none' : '';
-    if (statsBar) statsBar.style.display = isStats ? 'none' : '';
+    if (toolbar) toolbar.style.display = hideToolbar ? 'none' : '';
+    if (statsBar) statsBar.style.display = hideStatsBar ? 'none' : '';
 
     renderNav();
     renderCounts();
@@ -943,6 +1046,7 @@
       cat: state.view.indexOf('cat:') === 0 ? state.view.slice(4) : 'other',
       due: state.view === 'today' ? todayStr() : null
     }, patch || {}));
+    ensureNewVisible(t);
     state.isNew = true;
     state.editingId = t.id;
     renderAll();
@@ -954,6 +1058,20 @@
       const el = $('#dTitle');
       if (el) { el.focus(); autoGrow(el); }
     }, 60);
+  }
+
+  /* 新建的任务如果当前清单根本看不到，就自动切到「今天」，避免"加了却找不到" */
+  function ensureNewVisible(t) {
+    const v = state.view;
+    const hidden = v === 'stats' || v === 'archive' || (v === 'done' && t.status !== 'done');
+    if (!hidden) return false;
+
+    state.view = 'today';
+    state.status = 'all';
+    state.search = '';
+    const s = $('#search');
+    if (s) s.value = '';
+    return true;
   }
 
   function closeDrawer() {
@@ -1079,13 +1197,19 @@
   };
 
   function bindDrawer(t) {
+    // 输入类改动只影响列表里的一行，没必要每个字符都重建整个列表
+    // （任务多的时候逐字重绘会明显卡顿，这里合并到 180ms 一次）
+    const refreshSoon = debounce(function () {
+      renderContent();
+      renderHeader();
+    }, 180);
+
     const title = $('#dTitle');
     title.addEventListener('input', function () {
       t.title = title.value;
       autoGrow(title);
       touch(t);
-      renderContent();
-      renderHeader();
+      refreshSoon();
     });
 
     $('#dStatus').addEventListener('click', e => {
@@ -1147,20 +1271,20 @@
     $('#dTags').addEventListener('input', function () {
       t.tags = this.value.split(/[,，、]/).map(s => s.trim()).filter(Boolean);
       touch(t);
-      renderContent();
+      refreshSoon();
     });
 
     $('#dHours').addEventListener('input', function () {
       const v = this.value.trim();
       t.hours = v === '' ? null : Math.max(0, Number(v) || 0);
       touch(t);
-      renderContent();
+      refreshSoon();
     });
 
     $('#dNote').addEventListener('input', function () {
       t.note = this.value;
       touch(t);
-      renderContent();
+      refreshSoon();
     });
 
     const subInput = $('#dSubInput');
@@ -1316,17 +1440,14 @@
     let due = r.due;
     if (!due && fromView === 'today') due = todayStr();
 
-    addTask({ title: title, cat: cat, due: due, priority: pr.p });
+    const task = addTask({ title: title, cat: cat, due: due, priority: pr.p });
     $('#quickAdd').value = '';
 
-    // 在「已完成」视图里新建的任务看不见，自动切到未完成清单
-    if (fromView === 'done') {
-      state.view = 'inbox';
-      state.status = 'all';
-    }
+    const switched = ensureNewVisible(task);
 
     renderAll();
-    toast('已添加' + (due ? ' · 截止 ' + fmtDue(due) : '') + (pr.p ? ' · 优先级 ' + PRIOS[pr.p].name : ''));
+    toast('已添加' + (due ? ' · 截止 ' + fmtDue(due) : '') + (pr.p ? ' · 优先级 ' + PRIOS[pr.p].name : '') +
+      (switched ? ' · 已切到「今天」' : ''));
   }
 
   /* ---------------- 导入导出 ---------------- */
@@ -1807,7 +1928,10 @@
     });
 
     // 帮助
-    $('#btnHelp').addEventListener('click', () => $('#helpMask').classList.add('show'));
+    $('#btnHelp').addEventListener('click', () => {
+      renderBackupInfo();
+      $('#helpMask').classList.add('show');
+    });
     $('#helpClose').addEventListener('click', () => $('#helpMask').classList.remove('show'));
     $('#helpMask').addEventListener('click', e => {
       if (e.target === $('#helpMask')) $('#helpMask').classList.remove('show');
@@ -1870,6 +1994,7 @@
     remind = loadRemind();
     bindEvents();
     renderAll();
+    saveBackup();
     updateRemindBtn();
     checkRemind();
 

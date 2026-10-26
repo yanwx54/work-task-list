@@ -204,6 +204,14 @@
       <p>点左下角打印机图标，直接生成 A4 纵向的本周计划表，按周一到周日列出每天的任务，
         可以打印或存成 PDF 带去开会。</p>
 
+      <h4>数据存在哪</h4>
+      <p>全部数据保存在本机浏览器（localStorage），不上传服务器。换电脑或清缓存前，请用左下角
+        <b>下载</b> 按钮导出 JSON 备份，需要时用 <b>上传</b> 恢复。</p>
+
+      <h4>自动备份</h4>
+      <p id="backupInfo">每天首次打开会自动存一份快照，保留最近 3 份。</p>
+      <div id="backupActions"></div>
+
       <h4>快捷键</h4>
       <table class="keys">
         <tr><td><kbd>N</kbd></td><td>聚焦快速添加</td></tr>
@@ -212,10 +220,6 @@
         <tr><td><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></td><td>详情内切换 待办 / 进行中 / 已完成</td></tr>
         <tr><td><kbd>Ctrl</kbd>+<kbd>Enter</kbd></td><td>详情内保存</td></tr>
       </table>
-
-      <h4>数据存在哪</h4>
-      <p>全部数据保存在本机浏览器（localStorage），不上传服务器。换电脑或清缓存前，请用左下角
-        <b>下载</b> 按钮导出 JSON 备份，需要时用 <b>上传</b> 恢复。</p>
 
       <h4>小技巧</h4>
       <ul>

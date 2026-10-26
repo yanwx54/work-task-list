@@ -422,6 +422,7 @@ input:focus, textarea:focus, select:focus { outline: none; }
 .t-main { flex: 1; min-width: 0; cursor: pointer; }
 .t-row1 { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .t-title { font-size: 14.2px; font-weight: 500; word-break: break-word; }
+mark.hl { background: #ffe8a3; color: inherit; border-radius: 2px; padding: 0 1px; }
 .task.done .t-title { font-weight: 400; }
 
 .t-badge {
@@ -935,6 +936,7 @@ kbd {
   .board { grid-template-columns: 1fr; }
   .t-note { max-width: 160px; }
   .drawer { width: 100%; max-width: 100%; }
+  .drawer-foot { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
 }
 
 /* 触屏没有 hover，操作按钮常显 */
