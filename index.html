@@ -38,6 +38,8 @@
   <symbol id="i-print" viewBox="0 0 24 24"><path d="M6 9V3h12v6"/><rect x="3" y="9" width="18" height="8" rx="2"/><path d="M6 14h12v7H6z"/></symbol>
   <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 1 0-12 0c0 6-2 7-2 7h16s-2-1-2-7"/><path d="M10.5 20a2 2 0 0 0 3 0"/></symbol>
   <symbol id="i-restore" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/></symbol>
+  <symbol id="i-repeat" viewBox="0 0 24 24"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></symbol>
 </svg>
 
 <div class="app" id="app">
@@ -54,7 +56,7 @@
 
     <div class="quick-add">
       <svg class="qa-icon"><use href="#i-plus"/></svg>
-      <input id="quickAdd" type="text" placeholder="添加任务，回车确认" autocomplete="off">
+      <textarea id="quickAdd" rows="1" placeholder="添加任务，回车确认；粘贴多行可批量添加" autocomplete="off"></textarea>
       <button class="qa-submit" id="quickAddBtn" title="添加">↵</button>
     </div>
 
@@ -98,6 +100,7 @@
         <button class="icon-btn" id="btnExportCsv" title="导出表格（CSV）"><svg><use href="#i-chart"/></svg></button>
         <button class="icon-btn" id="btnPrint" title="打印本周计划（A4）"><svg><use href="#i-print"/></svg></button>
         <button class="icon-btn" id="btnRemind" title="每日 9 点提醒"><svg><use href="#i-bell"/></svg></button>
+        <button class="icon-btn" id="btnTheme" title="主题：跟随系统（点击切换）"><svg><use href="#i-sun"/></svg></button>
         <button class="icon-btn" id="btnHelp" title="使用说明 / 快捷键">?</button>
       </div>
     </div>
@@ -196,6 +199,14 @@
       <h4>归档</h4>
       <p>点删除不会真的删，任务会进「归档」，随时能恢复。归档里再点删除才是彻底删除。</p>
 
+      <h4>重复任务</h4>
+      <p>详情页「重复」选每天 / 每周 / 每两周 / 每月 / 每年。完成本期后自动生成下一期，
+        子任务会重置成未完成，适合周例会、月度巡检这类固定工作。</p>
+
+      <h4>批量操作</h4>
+      <p>列表里悬停任务行，点标题左侧的小方框选中（Shift+点击可连选），底部会出现操作条，
+        可批量完成、改分类、改日期、归档。Esc 取消选择。</p>
+
       <h4>每日提醒</h4>
       <p>点左下角铃铛开启。开启后每天 9 点后第一次打开页面，会用系统通知提醒今日待办和逾期任务，一天只提醒一次。
         <b>注意：页面关着的时候不会推送</b>，这是纯本地应用的限制。</p>
@@ -219,6 +230,11 @@
         <tr><td><kbd>Esc</kbd></td><td>关闭详情 / 取消搜索</td></tr>
         <tr><td><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></td><td>详情内切换 待办 / 进行中 / 已完成</td></tr>
         <tr><td><kbd>Ctrl</kbd>+<kbd>Enter</kbd></td><td>详情内保存</td></tr>
+        <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>列表中上下移动焦点行</td></tr>
+        <tr><td><kbd>Enter</kbd></td><td>打开焦点行详情</td></tr>
+        <tr><td><kbd>Space</kbd></td><td>完成 / 取消完成焦点行</td></tr>
+        <tr><td><kbd>S</kbd></td><td>选中 / 取消选中焦点行（批量操作）</td></tr>
+        <tr><td><kbd>Del</kbd></td><td>归档焦点行（归档区里为彻底删除）</td></tr>
       </table>
 
       <h4>小技巧</h4>
@@ -227,8 +243,10 @@
         <li>看板视图可以直接把卡片拖到另一列，状态随之改变。</li>
         <li>排序切到「手动排序」后，可以拖动任务自己排顺序，松手即保存。</li>
         <li>快速添加支持「明天 / 后天 / 周五 / 下周三 / 10月20日」这类词，会自动识别成截止日期。</li>
-        <li>快速添加里加 <b>!高</b> / <b>!中</b> / <b>!低</b> 可以直接设优先级，例如「明天 !高 提交标书」。</li>
-        <li>详情页底部「复制」可以按当前任务再建一条，适合每周例会这类重复工作。</li>
+        <li>快速添加里加 <b>!高</b> / <b>!中</b> / <b>!低</b> 可以直接设优先级，例如「明天 !高 提交标书」；加 <b>#国网</b> 这样的词会自动变成标签。</li>
+        <li>从别处复制多行文字粘贴到快速添加，回车一次全部加进来。</li>
+        <li>重复任务完成后会自动生成下一期；「复制」仍可用于临时要办两遍的任务。</li>
+        <li>开多个标签页同时看也不会互相覆盖，任何一边的改动另一边实时更新。</li>
       </ul>
     </div>
   </div>

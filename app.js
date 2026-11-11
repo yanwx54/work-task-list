@@ -26,6 +26,41 @@
 
   const STATUS_NAME = { todo: '待办', doing: '进行中', done: '已完成' };
 
+  const REPEATS = {
+    none:      { name: '不重复' },
+    daily:     { name: '每天' },
+    weekly:    { name: '每周' },
+    biweekly:  { name: '每两周' },
+    monthly:   { name: '每月' },
+    yearly:    { name: '每年' }
+  };
+
+  /* 按周期加一期（月/年按月末对齐：1月31日 +1月 = 2月28日） */
+  function addPeriod(s, freq) {
+    if (freq === 'daily') return addDays(s, 1);
+    if (freq === 'weekly') return addDays(s, 7);
+    if (freq === 'biweekly') return addDays(s, 14);
+    const months = freq === 'yearly' ? 12 : 1;
+    const d = parseYmd(s);
+    const day = d.getDate();
+    d.setDate(1);
+    d.setMonth(d.getMonth() + months);
+    const last = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+    d.setDate(Math.min(day, last));
+    return ymd(d);
+  }
+
+  /* 重复任务的下一期截止日：从原到期日往后推，跨过"今天"为止
+     （这样拖了几周才补做的周会，下一条会落到正确的下一个周期，而不是继续逾期） */
+  function nextRepeatDue(due, freq) {
+    if (!REPEATS[freq] || freq === 'none') return null;
+    let next = addPeriod(due || todayStr(), freq);
+    const t = todayStr();
+    let guard = 0;
+    while (next < t && guard++ < 400) next = addPeriod(next, freq);
+    return next;
+  }
+
   const VIEW_META = {
     today:   { title: '今天',       sub: '所有未完成的任务都在这里' },
     week:    { title: '未来 7 天',  sub: '提前看到接下来一周的安排' },
@@ -49,9 +84,14 @@
     sort: 'smart',
     search: '',
     statsRange: 'month',
+    theme: 'auto',
     editingId: null,
     isNew: false,
-    lastDeleted: null
+    lastDeleted: null,
+    purged: {},          // 墓碑：彻底删除的 id -> 删除时间（防别的标签页/备份复活它）
+    sel: new Set(),      // 批量选择：任务 id
+    selAnchor: null,     // Shift 连选的锚点
+    navId: null          // 键盘导航当前聚焦的行
   };
 
   let dragId = null;
@@ -203,18 +243,17 @@
   function load() {
     try {
       const raw = localStorage.getItem(STORE_KEY);
-      if (!raw) return [];
-      const data = JSON.parse(raw);
-      const list = Array.isArray(data) ? data : (data && data.tasks) || [];
-      return list.map(normalizeTask).filter(Boolean);
+      if (!raw) return { tasks: [], purged: {} };
+      JSON.parse(raw); // 主数据损坏时抛错，走下面的快照兜底
+      return parseStore(raw);
     } catch (e) {
       console.warn('读取本地数据失败，尝试从备份恢复', e);
       const list = loadBackups();
       if (list.length && Array.isArray(list[0].tasks)) {
         console.warn('已使用 ' + list[0].date + ' 的快照');
-        return list[0].tasks.map(normalizeTask).filter(Boolean);
+        return { tasks: list[0].tasks.map(normalizeTask).filter(Boolean), purged: {} };
       }
-      return [];
+      return { tasks: [], purged: {} };
     }
   }
 
@@ -235,6 +274,8 @@
       hours: typeof t.hours === 'number' && t.hours >= 0 ? t.hours : null,
       archived: !!t.archived,
       archivedAt: t.archivedAt || null,
+      repeat: REPEATS[t.repeat] ? t.repeat : 'none',
+      nextId: t.nextId || null,
       createdAt: t.createdAt || Date.now(),
       updatedAt: t.updatedAt || t.createdAt || Date.now(),
       completedAt: t.completedAt || null
@@ -242,13 +283,89 @@
   }
 
   const save = debounce(function () {
+    // 写入前先和 localStorage 里（可能是别的标签页刚写的）合并一次，
+    // 避免两个标签页互相整包覆盖
+    syncWithStore();
     try {
-      localStorage.setItem(STORE_KEY, JSON.stringify({ version: APP_VER, tasks: state.tasks }));
+      localStorage.setItem(STORE_KEY, JSON.stringify({
+        version: APP_VER, tasks: state.tasks, purged: state.purged
+      }));
     } catch (e) {
       toast('保存失败：浏览器存储空间可能已满');
     }
     saveBackup();
   }, 120);
+
+  /* ---------------- 多标签页同步 ---------------- */
+  const PURGED_MAX = 500;
+
+  function parseStore(raw) {
+    if (!raw) return { tasks: [], purged: {} };
+    try {
+      const data = JSON.parse(raw);
+      const list = (Array.isArray(data) ? data : (data && data.tasks) || [])
+        .map(normalizeTask).filter(Boolean);
+      const purged = (data && data.purged && typeof data.purged === 'object') ? data.purged : {};
+      return { tasks: list, purged: purged };
+    } catch (e) {
+      return { tasks: [], purged: {} };
+    }
+  }
+
+  /* 把远端数据合进本地（就地）。规则：
+     - 墓碑（purged：彻底删除的 id -> 删除时间）：删除时间晚于对方任务 updatedAt 的一方生效，
+       两边墓碑取并集；这样删除能同步，旧备份也不会让已删任务复活。
+     - 同 id 任务：updatedAt 新者胜（就地覆盖，抽屉正编辑它时引用仍有效）。
+     - 本地有、远端没有且无墓碑：是本机新增对方还没看到的，保留。
+     返回是否有变化。 */
+  function mergeRemote(local, localPurged, remote, remotePurged) {
+    let changed = false;
+
+    Object.keys(remotePurged).forEach(id => {
+      const ts = Number(remotePurged[id]) || 0;
+      if (!(id in localPurged) || Number(localPurged[id]) < ts) localPurged[id] = ts;
+      const cur = local.find(t => t.id === id);
+      if (cur && ts >= (cur.updatedAt || 0)) {
+        local.splice(local.indexOf(cur), 1);
+        changed = true;
+      }
+    });
+
+    const lmap = {};
+    local.forEach(t => { lmap[t.id] = t; });
+    remote.forEach(t => {
+      if (t.id in localPurged && localPurged[t.id] >= (t.updatedAt || 0)) return;
+      const cur = lmap[t.id];
+      if (!cur) {
+        local.push(t);
+        changed = true;
+      } else if ((t.updatedAt || 0) > (cur.updatedAt || 0)) {
+        Object.keys(t).forEach(k => { cur[k] = t[k]; });
+        changed = true;
+      }
+    });
+
+    // 墓碑集合防膨胀：按删除时间保留最近 PURGED_MAX 条
+    const keys = Object.keys(localPurged);
+    if (keys.length > PURGED_MAX) {
+      keys.sort((a, b) => localPurged[b] - localPurged[a]).slice(PURGED_MAX).forEach(k => { delete localPurged[k]; });
+    }
+    return changed;
+  }
+
+  function syncWithStore() {
+    const remote = parseStore(localStorage.getItem(STORE_KEY));
+    return mergeRemote(state.tasks, state.purged, remote.tasks, remote.purged);
+  }
+
+  window.addEventListener('storage', function (e) {
+    if (e.key !== STORE_KEY || e.newValue == null) return;
+    const remote = parseStore(e.newValue);
+    if (!mergeRemote(state.tasks, state.purged, remote.tasks, remote.purged)) return;
+    if (state.editingId && getTask(state.editingId)) renderDrawer(getTask(state.editingId));
+    renderAll();
+    toast('已同步另一个标签页的改动');
+  });
 
   /* 界面偏好（视图 / 布局 / 筛选 / 排序）单独存，刷新后保持原样 */
   const PREFS_KEY = 'work-tasks.prefs.v1';
@@ -261,10 +378,11 @@
         layout: p.layout === 'board' ? 'board' : 'list',
         status: ['all', 'todo', 'doing', 'done'].indexOf(p.status) >= 0 ? p.status : 'all',
         sort: ['smart', 'due', 'priority', 'created', 'manual'].indexOf(p.sort) >= 0 ? p.sort : 'smart',
-        statsRange: ['week', 'month', 'all'].indexOf(p.statsRange) >= 0 ? p.statsRange : 'month'
+        statsRange: ['week', 'month', 'all'].indexOf(p.statsRange) >= 0 ? p.statsRange : 'month',
+        theme: ['auto', 'light', 'dark'].indexOf(p.theme) >= 0 ? p.theme : 'auto'
       };
     } catch (e) {
-      return { view: 'today', layout: 'list', status: 'all', sort: 'smart', statsRange: 'month' };
+      return { view: 'today', layout: 'list', status: 'all', sort: 'smart', statsRange: 'month', theme: 'auto' };
     }
   }
 
@@ -272,9 +390,32 @@
     try {
       localStorage.setItem(PREFS_KEY, JSON.stringify({
         view: state.view, layout: state.layout, status: state.status,
-        sort: state.sort, statsRange: state.statsRange
+        sort: state.sort, statsRange: state.statsRange, theme: state.theme
       }));
     } catch (e) { /* 忽略 */ }
+  }
+
+  /* ---------------- 主题（自动 / 浅色 / 深色） ---------------- */
+  const darkQuery = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+
+  function applyTheme() {
+    const dark = state.theme === 'dark' || (state.theme === 'auto' && darkQuery && darkQuery.matches);
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+    const btn = $('#btnTheme');
+    if (btn) {
+      const label = state.theme === 'auto' ? '自动' : dark ? '深色' : '浅色';
+      btn.title = '主题：' + label + '（点击切换）';
+      btn.innerHTML = state.theme === 'auto'
+        ? '<svg><use href="#i-moon"/></svg>'
+        : dark ? '<svg><use href="#i-moon"/></svg>' : '<svg><use href="#i-sun"/></svg>';
+    }
+  }
+
+  function cycleTheme() {
+    state.theme = { auto: 'light', light: 'dark', dark: 'auto' }[state.theme];
+    applyTheme();
+    savePrefs();
+    toast('主题：' + (state.theme === 'auto' ? '跟随系统' : state.theme === 'dark' ? '深色' : '浅色'));
   }
 
   /* ---------------- 任务操作 ---------------- */
@@ -300,10 +441,16 @@
     return t;
   }
 
+  /* 删除 / 归档后收回选中态，避免操作条计数与实际不符 */
+  function unselect(id) {
+    if (state.sel.delete(id)) updateSelectingClass();
+  }
+
   /* 删除 = 归档，进「归档」清单还能翻回来 */
   function archiveTask(id) {
     const t = getTask(id);
     if (!t) return;
+    unselect(id);
     t.archived = true;
     t.archivedAt = Date.now();
     t.updatedAt = Date.now();
@@ -337,6 +484,8 @@
     if (idx < 0) return;
     const t = state.tasks[idx];
     state.tasks.splice(idx, 1);
+    const purgedAt = Date.now();
+    state.purged[id] = purgedAt; // 墓碑：别的标签页不能让它复活
     state.lastDeleted = { task: t, index: idx };
     save();
     renderAll();
@@ -344,6 +493,7 @@
       label: '撤销',
       onClick: function () {
         state.tasks.splice(state.lastDeleted.index, 0, state.lastDeleted.task);
+        delete state.purged[id]; // 撤销则收回墓碑
         state.lastDeleted = null;
         save();
         renderAll();
@@ -352,29 +502,57 @@
     });
   }
 
+  /* 重复任务：完成本期后自动生成下一期（子任务全部重置为未完成）。
+     nextId 指向已生成的下一期；只要那条还活着（未彻底删除/未归档），就不再重复生成，
+     防"取消完成 -> 再完成"刷出一串任务。 */
+  function spawnNextInstance(t) {
+    if (!REPEATS[t.repeat] || t.repeat === 'none') return null;
+    if (t.nextId) {
+      const prev = getTask(t.nextId);
+      if (prev && !prev.archived) return null;
+    }
+    const next = addTask({
+      title: t.title,
+      cat: t.cat,
+      priority: t.priority,
+      due: nextRepeatDue(t.due, t.repeat),
+      dueTime: t.dueTime,
+      note: t.note,
+      tags: t.tags.slice(),
+      subs: t.subs.map(s => ({ id: uid(), title: s.title, done: false })),
+      repeat: t.repeat
+    });
+    t.nextId = next.id;
+    return next;
+  }
+
   function toggleDone(id) {
     const t = getTask(id);
     if (!t) return;
     if (t.status === 'done') {
       t.status = 'todo';
       t.completedAt = null;
+      t.updatedAt = Date.now();
+      save();
+      renderAll();
     } else {
-      t.status = 'done';
-      t.completedAt = Date.now();
+      setStatus(id, 'done');
     }
-    t.updatedAt = Date.now();
-    save();
-    renderAll();
   }
 
   function setStatus(id, status) {
     const t = getTask(id);
     if (!t) return;
+    const wasDone = t.status === 'done';
     t.status = status;
     t.completedAt = status === 'done' ? (t.completedAt || Date.now()) : null;
     t.updatedAt = Date.now();
+    let next = null;
+    if (status === 'done' && !wasDone) next = spawnNextInstance(t);
     save();
     renderAll();
+    if (next) toast('已生成下一期 · ' + (next.due ? fmtDue(next.due, next.dueTime) : '未排期'));
+    return next;
   }
 
   /* 手动排序：把 fromId 插到 targetId 前/后，再把当前列表顺序写回 order */
@@ -648,6 +826,9 @@
     if (t.tags.length) {
       meta += `<span><svg><use href="#i-tag"/></svg>${esc(t.tags.join(' · '))}</span>`;
     }
+    if (t.repeat && t.repeat !== 'none') {
+      meta += `<span title="重复：${REPEATS[t.repeat].name}，完成后自动生成下一期"><svg><use href="#i-repeat"/></svg>${REPEATS[t.repeat].name}</span>`;
+    }
     if (inArchive && t.archivedAt) {
       meta += `<span>归档于 ${esc(fmtDateTime(t.archivedAt))}</span>`;
     }
@@ -661,13 +842,15 @@
       : `<button data-act="doing" title="标记为进行中"><svg><use href="#i-clock"/></svg></button>
          <button data-act="archive" title="归档（可在「归档」里找回）"><svg><use href="#i-archive"/></svg></button>`;
 
+    const selected = state.sel.has(t.id);
     return `
-      <div class="task ${t.status === 'done' ? 'done' : ''} ${t.status === 'doing' ? 'doing' : ''} ${inArchive ? 'archived-item' : ''}"
+      <div class="task ${t.status === 'done' ? 'done' : ''} ${t.status === 'doing' ? 'doing' : ''} ${inArchive ? 'archived-item' : ''} ${selected ? 'selected' : ''} ${state.navId === t.id ? 'nav-focus' : ''}"
            data-id="${t.id}" ${manual ? 'draggable="true"' : ''}>
+        <button class="t-selbox" data-act="sel" title="选择（Shift+点击可连选）" tabindex="-1"><svg><use href="#i-check"/></svg></button>
         <button class="t-check" data-act="toggle" title="${t.status === 'done' ? '标记为未完成' : '标记完成'}"><svg><use href="#i-check"/></svg></button>
         <div class="t-main" data-act="open">
           <div class="t-row1">
-            <span class="t-title">${t.title ? hl(t.title) : '<span style="color:#b0b6c0">未命名任务</span>'}</span>
+            <span class="t-title">${t.title ? hl(t.title) : '<span style="color:var(--placeholder)">未命名任务</span>'}</span>
             ${t.priority ? `<span class="t-prio-tag" style="--pc:${prio.color};--pb:${prio.bg}">${prio.name}</span>` : ''}
             <span class="t-badge" style="--bc:${cat.color};--bc-bg:${cat.bg}">${cat.name}</span>
             ${t.status === 'doing' ? '<span class="t-badge" style="--bc:#B6741B;--bc-bg:#FDF3E4">进行中</span>' : ''}
@@ -695,10 +878,10 @@
       meta += `<span><svg><use href="#i-check"/></svg>${subDone}/${t.subs.length}</span>`;
     }
     return `
-      <div class="kcard ${t.status === 'done' ? 'done' : ''}" data-id="${t.id}" draggable="true">
+      <div class="kcard ${t.status === 'done' ? 'done' : ''} ${state.navId === t.id ? 'nav-focus' : ''}" data-id="${t.id}" draggable="true">
         <div class="k-top">
           ${t.priority ? `<i class="k-prio" style="--pc:${prio.color}" title="优先级：${prio.name}"></i>` : ''}
-          <div class="k-title">${t.title ? hl(t.title) : '<span style="color:#b0b6c0">未命名任务</span>'}</div>
+          <div class="k-title">${t.title ? hl(t.title) : '<span style="color:var(--placeholder)">未命名任务</span>'}</div>
         </div>
         <div class="k-meta">${meta}</div>
       </div>`;
@@ -755,6 +938,7 @@
 
     if (state.layout === 'board') {
       el.innerHTML = renderBoard(list);
+      updateSelectingClass();
       return;
     }
 
@@ -780,7 +964,11 @@
       html += '<div class="task-list">' + list.map(taskItemHTML).join('') + '</div>';
     }
 
+    if (state.sel.size) html += selBarHTML();
+
     el.innerHTML = html;
+    updateSelectingClass();
+    bindSelBar();
 
     bindBulk('btnClearDone', '归档这些已完成', function () {
       let n = 0;
@@ -808,6 +996,145 @@
   function bulkBar(text, btnId, btnText) {
     return `<div class="bulk-bar"><span>${text}</span>
       <button class="btn-ghost danger" id="${btnId}">${btnText}</button></div>`;
+  }
+
+  /* ---------------- 批量选择 ---------------- */
+  function toggleSelect(id, anchorMode) {
+    if (state.layout === 'board') return; // 批量选择只在列表视图提供
+    if (anchorMode && state.selAnchor) {
+      // Shift 连选：从锚点到当前行（按当前列表顺序）
+      const ids = currentList().map(t => t.id);
+      const a = ids.indexOf(state.selAnchor), b = ids.indexOf(id);
+      if (a >= 0 && b >= 0) {
+        ids.slice(Math.min(a, b), Math.max(a, b) + 1).forEach(x => state.sel.add(x));
+        renderContent();
+        return;
+      }
+    }
+    if (state.sel.has(id)) { state.sel.delete(id); state.selAnchor = null; }
+    else { state.sel.add(id); state.selAnchor = id; }
+    renderContent();
+  }
+
+  function clearSel() {
+    if (!state.sel.size) return;
+    state.sel.clear();
+    state.selAnchor = null;
+    renderContent();
+  }
+
+  function selectedTasks() {
+    const alive = {};
+    currentList().forEach(t => { alive[t.id] = t; });
+    return Array.from(state.sel).map(id => alive[id]).filter(Boolean);
+  }
+
+  /* 批量选择时压住逐条重绘（quietOps 计数，renderAll 期间跳过） */
+  let quietOps = 0;
+
+  function updateSelectingClass() {
+    document.body.classList.toggle('selecting', state.sel.size > 0);
+  }
+
+  function bulkAction(label, fn) {
+    const list = selectedTasks();
+    if (!list.length) { clearSel(); return; }
+    quietOps++;
+    try {
+      list.forEach(fn);
+    } finally {
+      quietOps--;
+    }
+    save();
+    clearSel();
+    renderAll();
+    toast('已对 ' + list.length + ' 条任务' + label);
+  }
+
+  function selBarHTML() {
+    const inArchive = state.view === 'archive';
+    const catMenu = CAT_KEYS.map(k =>
+      `<button data-scat="${k}"><i class="dot" style="--c:${CATS[k].color};width:7px;height:7px;border-radius:50%;background:${CATS[k].color}"></i>${CATS[k].name}</button>`).join('');
+    return `
+      <div class="sel-bar" id="selBar">
+        <span>已选 <b>${state.sel.size}</b> 条</span>
+        ${inArchive ? '' : `
+        <button data-sdo="complete"><svg><use href="#i-check"/></svg>完成</button>
+        <div class="sel-menu">
+          <button id="selCatBtn"><svg><use href="#i-dots"/></svg>改分类</button>
+          <div class="sel-menu-pop" id="selCatPop" style="display:none">${catMenu}</div>
+        </div>
+        <button data-sdo="duetomorrow"><svg><use href="#i-calendar"/></svg>改期到明天</button>
+        <div class="sel-menu">
+          <button id="selDateBtn"><svg><use href="#i-calendar"/></svg>选日期</button>
+          <input type="date" id="selDatePop" style="display:none;position:absolute;bottom:32px;left:0;z-index:40">
+        </div>`}
+        <button data-sdo="${inArchive ? 'delete' : 'archive'}"><svg><use href="#i-${inArchive ? 'trash' : 'archive'}"/></svg>${inArchive ? '彻底删除' : '归档'}</button>
+        <span class="sep"></span>
+        <button class="btn-cancel" data-sdo="clear">取消</button>
+      </div>`;
+  }
+
+  function bindSelBar() {
+    const bar = $('#selBar');
+    if (!bar) return;
+    bar.addEventListener('click', e => {
+      const b = e.target.closest('[data-sdo]');
+      if (b) {
+        const act = b.getAttribute('data-sdo');
+        if (act === 'clear') clearSel();
+        else if (act === 'delete') {
+          const ids = Array.from(state.sel);
+          const n = ids.length;
+          const now = Date.now();
+          quietOps++;
+          try {
+            ids.forEach(id => {
+              if (id in state.purged) return;
+              state.purged[id] = now;
+              const i = state.tasks.findIndex(t => t.id === id);
+              if (i >= 0) state.tasks.splice(i, 1);
+            });
+          } finally { quietOps--; }
+          save();
+          clearSel();
+          renderAll();
+          toast('已彻底删除 ' + n + ' 条任务');
+        }
+        else if (act === 'complete') bulkAction('标记完成', t => {
+          if (t.status !== 'done') setStatus(t.id, 'done');
+        });
+        else if (act === 'duetomorrow') bulkAction('改期到明天', t => { t.due = addDays(todayStr(), 1); });
+        else if (act === 'archive') bulkAction('归档', t => { t.archived = true; t.archivedAt = Date.now(); });
+        return;
+      }
+      const catBtn = e.target.closest('#selCatBtn');
+      if (catBtn) {
+        const pop = $('#selCatPop');
+        pop.style.display = pop.style.display === 'none' ? 'flex' : 'none';
+        return;
+      }
+      const cb = e.target.closest('[data-scat]');
+      if (cb) {
+        const k = cb.getAttribute('data-scat');
+        bulkAction('移到「' + CATS[k].name + '」', t => { t.cat = k; });
+        return;
+      }
+      const dateBtn = e.target.closest('#selDateBtn');
+      if (dateBtn) {
+        const pop = $('#selDatePop');
+        if (pop.style.display === 'none') {
+          pop.style.display = '';
+          try { pop.showPicker ? pop.showPicker() : pop.focus(); } catch (err) { pop.focus(); }
+        }
+      }
+    });
+    const dp = $('#selDatePop');
+    if (dp) dp.addEventListener('change', function () {
+      if (!this.value) return;
+      const v = this.value;
+      bulkAction('改期到 ' + fmtDue(v), t => { t.due = v; });
+    });
   }
 
   function bindBulk(id, label, action) {
@@ -1010,6 +1337,7 @@
   }
 
   function renderAll() {
+    if (quietOps) return; // 批量操作期间压住逐条重绘，结束后统一刷一次
     const isStats = state.view === 'stats';
     const liveCount = state.tasks.filter(t => !t.archived).length;
     // 统计面板自己就是统计；归档清单不再按状态筛选；没有数据时也不必摆一堆 0
@@ -1061,17 +1389,30 @@
   }
 
   /* 新建的任务如果当前清单根本看不到，就自动切到「今天」，避免"加了却找不到" */
+  /* 新建的任务如果当前清单根本看不到，就自动切到「今天」并清掉搜索，避免"加了却找不到" */
   function ensureNewVisible(t) {
+    let switched = false;
+
+    // 搜索中且新任务不命中当前关键词 -> 也会"加了看不见"，清掉搜索
+    const q = state.search.trim().toLowerCase();
+    if (q) {
+      const hay = (t.title + ' ' + t.note + ' ' + t.tags.join(' ') + ' ' +
+        t.subs.map(s => s.title).join(' ')).toLowerCase();
+      if (hay.indexOf(q) < 0) {
+        state.search = '';
+        const s = $('#search');
+        if (s) s.value = '';
+      }
+    }
+
     const v = state.view;
     const hidden = v === 'stats' || v === 'archive' || (v === 'done' && t.status !== 'done');
-    if (!hidden) return false;
-
-    state.view = 'today';
-    state.status = 'all';
-    state.search = '';
-    const s = $('#search');
-    if (s) s.value = '';
-    return true;
+    if (hidden) {
+      state.view = 'today';
+      state.status = 'all';
+      switched = true;
+    }
+    return switched;
   }
 
   function closeDrawer() {
@@ -1131,6 +1472,13 @@
           <button data-q="tomorrow">明天</button>
           <button data-q="nextweek">下周同一天</button>
           <button data-q="clear">清除</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="field-label">重复 <span style="color:var(--placeholder);font-weight:400">完成后自动生成下一期</span></label>
+        <div class="opt-row" id="dRepeat">
+          ${Object.keys(REPEATS).map(k => `<button class="opt ${t.repeat === k ? 'on' : ''}" data-r="${k}"${k === 'none' ? '' : ' style="--oc-bg:#EAF2FA;--oc-bd:#BFD8EE;--oc-fg:#2C6B9F"'}>${REPEATS[k].name}</button>`).join('')}
         </div>
       </div>
 
@@ -1216,12 +1564,9 @@
       const b = e.target.closest('[data-s]');
       if (!b) return;
       const s = b.getAttribute('data-s');
-      t.status = s;
-      t.completedAt = s === 'done' ? (t.completedAt || Date.now()) : null;
-      touch(t);
+      setStatus(t.id, s);
       $$('#dStatus .opt').forEach(x => x.classList.toggle('on', x === b));
       $('#drawerCrumb').innerHTML = '<span style="color:' + CATS[t.cat].color + '">●</span> ' + CATS[t.cat].name + (s === 'done' ? ' · 已完成' : '');
-      renderAll();
     });
 
     $('#dCat').addEventListener('click', e => {
@@ -1240,6 +1585,16 @@
       t.priority = Number(b.getAttribute('data-p'));
       touch(t);
       $$('#dPrio .opt').forEach(x => x.classList.toggle('on', x === b));
+      renderContent();
+    });
+
+    $('#dRepeat').addEventListener('click', e => {
+      const b = e.target.closest('[data-r]');
+      if (!b) return;
+      t.repeat = b.getAttribute('data-r');
+      if (t.repeat !== 'none') t.nextId = null; // 换周期后重新计算下一期
+      touch(t);
+      $$('#dRepeat .opt').forEach(x => x.classList.toggle('on', x === b));
       renderContent();
     });
 
@@ -1427,27 +1782,59 @@
     return { p: 0, rest: text };
   }
 
-  function quickAdd(raw) {
+  /* 快速添加里的 #标签 */
+  function extractTags(text) {
+    const tags = [];
+    const rest = text.replace(/(^|\s)#([^\s#]+)/g, function (m, pre, tag) {
+      tags.push(tag);
+      return pre;
+    }).replace(/\s+/g, ' ').trim();
+    return { tags: tags, rest: rest };
+  }
+
+  /* 解析并创建一行快速添加；返回 null=空行，false=只有标记没有标题 */
+  function quickAddOne(raw) {
     const text = (raw || '').trim();
-    if (!text) return;
-    const r = extractDate(text);
+    if (!text) return null;
+    const tg = extractTags(text);
+    const r = extractDate(tg.rest);
     const pr = extractPriority(r.rest);
     const title = pr.rest.replace(/^[\s,，、]+|[\s,，、]+$/g, '');
-    if (!title) { toast('请输入任务内容'); return; }
+    if (!title) return false;
 
     const fromView = state.view;
     const cat = fromView.indexOf('cat:') === 0 ? fromView.slice(4) : 'other';
     let due = r.due;
     if (!due && fromView === 'today') due = todayStr();
 
-    const task = addTask({ title: title, cat: cat, due: due, priority: pr.p });
-    $('#quickAdd').value = '';
+    return addTask({ title: title, cat: cat, due: due, priority: pr.p, tags: tg.tags });
+  }
 
-    const switched = ensureNewVisible(task);
+  function quickAdd(raw) {
+    const lines = String(raw || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    if (!lines.length) return;
+    const results = lines.map(quickAddOne);
+    const added = results.filter(t => t);
+    if (!added.length) { toast('请输入任务内容'); clearQuickAdd(); return; }
+
+    clearQuickAdd();
+    const first = added[0];
+    const switched = ensureNewVisible(first);
 
     renderAll();
-    toast('已添加' + (due ? ' · 截止 ' + fmtDue(due) : '') + (pr.p ? ' · 优先级 ' + PRIOS[pr.p].name : '') +
+    toast((added.length > 1 ? '已批量添加 ' + added.length + ' 条任务'
+      : '已添加' + (first.due ? ' · 截止 ' + fmtDue(first.due) : '') +
+        (first.priority ? ' · 优先级 ' + PRIOS[first.priority].name : '')) +
       (switched ? ' · 已切到「今天」' : ''));
+  }
+
+  function clearQuickAdd() {
+    const q = $('#quickAdd');
+    if (!q) return;
+    q.value = '';
+    q.style.height = 'auto';
+    const box = q.closest('.quick-add');
+    if (box) box.classList.remove('multiline');
   }
 
   /* ---------------- 导入导出 ---------------- */
@@ -1464,13 +1851,13 @@
   }
 
   function exportJSON() {
-    const data = { version: APP_VER, exportedAt: new Date().toISOString(), tasks: state.tasks };
+    const data = { version: APP_VER, exportedAt: new Date().toISOString(), tasks: state.tasks, purged: state.purged };
     download('任务清单备份-' + todayStr() + '.json', JSON.stringify(data, null, 2), 'application/json');
     toast('已导出 ' + state.tasks.length + ' 条任务');
   }
 
   function exportCSV() {
-    const head = ['标题', '分类', '状态', '优先级', '截止日期', '截止时间', '实际耗时(小时)', '标签', '子任务', '备注', '创建时间', '完成时间', '是否归档'];
+    const head = ['标题', '分类', '状态', '优先级', '截止日期', '截止时间', '重复', '实际耗时(小时)', '标签', '子任务', '备注', '创建时间', '完成时间', '是否归档'];
     const rows = state.tasks.map(t => [
       t.title,
       CATS[t.cat].name,
@@ -1478,6 +1865,7 @@
       PRIOS[t.priority].name,
       t.due || '',
       t.dueTime || '',
+      t.repeat && t.repeat !== 'none' ? REPEATS[t.repeat].name : '',
       t.hours != null ? t.hours : '',
       t.tags.join(' / '),
       t.subs.map(s => (s.done ? '✓' : '○') + s.title).join(' | '),
@@ -1501,16 +1889,37 @@
         const list = Array.isArray(data) ? data : (data && data.tasks) || [];
         const incoming = list.map(normalizeTask).filter(Boolean);
         if (!incoming.length) { toast('文件里没有可导入的任务'); return; }
-        const exists = new Set(state.tasks.map(t => t.id));
-        let added = 0;
+
+        // 导入文件的墓碑（彻底删除记录）：晚于它的同名任务不会被"复活"
+        const purge = (data && data.purged && typeof data.purged === 'object') ? data.purged : {};
+        Object.keys(purge).forEach(id => {
+          const ts = Number(purge[id]) || 0;
+          if (!(id in state.purged) || Number(state.purged[id]) < ts) state.purged[id] = ts;
+        });
+        const cur = {};
+        state.tasks.forEach(t => { cur[t.id] = t; });
+        Object.keys(purge).forEach(id => {
+          const t = cur[id];
+          if (t && (purge[id] || 0) >= (t.updatedAt || 0)) state.tasks.splice(state.tasks.indexOf(t), 1);
+        });
+
+        let added = 0, updated = 0, skipped = 0;
+        const map = {};
+        state.tasks.forEach(t => { map[t.id] = t; });
         incoming.forEach(t => {
-          if (exists.has(t.id)) return;
-          state.tasks.push(t);
-          added++;
+          if (t.id in state.purged && state.purged[t.id] >= (t.updatedAt || 0)) { skipped++; return; }
+          const exist = map[t.id];
+          if (!exist) { state.tasks.push(t); map[t.id] = t; added++; }
+          else if ((t.updatedAt || 0) > (exist.updatedAt || 0)) {
+            Object.keys(t).forEach(k => { exist[k] = t[k]; }); // 新者胜
+            updated++;
+          } else skipped++;
         });
         save();
         renderAll();
-        toast('导入完成：新增 ' + added + ' 条，跳过重复 ' + (incoming.length - added) + ' 条');
+        toast('导入完成：新增 ' + added + ' 条' +
+          (updated ? '，更新 ' + updated + ' 条' : '') +
+          (skipped ? '，跳过 ' + skipped + ' 条（本地更新或已删除）' : ''));
       } catch (e) {
         toast('导入失败：文件格式不正确');
       }
@@ -1716,6 +2125,39 @@
     if (d) d.onclick = () => loadDemo();
   }
 
+  /* ---------------- 键盘导航 ---------------- */
+  function navList() {
+    return currentList().map(t => t.id);
+  }
+
+  function navMove(delta) {
+    const ids = navList();
+    if (!ids.length) return;
+    let i = state.navId ? ids.indexOf(state.navId) : -1;
+    if (i < 0) i = delta > 0 ? -1 : ids.length;
+    i = Math.max(0, Math.min(ids.length - 1, i + delta));
+    state.navId = ids[i];
+    renderContent();
+    const el = $('.task[data-id="' + state.navId + '"], .kcard[data-id="' + state.navId + '"]');
+    if (el) el.scrollIntoView({ block: 'nearest' });
+  }
+
+  function navAction(key) {
+    if (!state.navId) return false;
+    const t = getTask(state.navId);
+    if (!t) { state.navId = null; return false; }
+    if (key === 'enter') { state.navId && openTask(state.navId); return true; }
+    if (key === 'space') { toggleDone(state.navId); return true; }
+    if (key === 's') { toggleSelect(state.navId, false); return true; }
+    if (key === 'delete' || key === 'backspace') {
+      if (state.view === 'archive') deleteForever(state.navId);
+      else archiveTask(state.navId);
+      state.navId = null;
+      return true;
+    }
+    return false;
+  }
+
   /* ---------------- 事件绑定 ---------------- */
   function bindEvents() {
     // 侧边栏导航
@@ -1725,6 +2167,9 @@
       state.view = item.getAttribute('data-view');
       state.status = 'all';
       state.search = '';
+      state.sel.clear();
+      state.selAnchor = null;
+      state.navId = null;
       $('#search').value = '';
       renderAll();
       $('#content').scrollTop = 0;
@@ -1732,11 +2177,31 @@
       $('#sidebarMask').classList.remove('show');
     });
 
-    // 快速添加
-    $('#quickAdd').addEventListener('keydown', e => {
-      if (e.key === 'Enter') { e.preventDefault(); quickAdd(e.target.value); }
+    // 快速添加（textarea：Enter 提交，Shift+Enter / 粘贴多行 = 批量添加）
+    const qa = $('#quickAdd');
+    qa.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.altKey) {
+        // 粘贴产生的多行内容，回车 = 批量提交；手动 Shift+Enter 换行后回车同样提交全部
+        e.preventDefault();
+        quickAdd(qa.value);
+      }
     });
-    $('#quickAddBtn').addEventListener('click', () => quickAdd($('#quickAdd').value));
+    qa.addEventListener('input', function () {
+      this.style.height = 'auto';
+      this.style.height = Math.min(this.scrollHeight, 160) + 'px';
+      this.closest('.quick-add').classList.toggle('multiline', this.value.indexOf('\n') >= 0);
+    });
+    qa.addEventListener('paste', function () {
+      const v = this.value;
+      setTimeout(() => {
+        if (this.value.indexOf('\n') >= 0 || this.value !== v) {
+          this.style.height = 'auto';
+          this.style.height = Math.min(this.scrollHeight, 160) + 'px';
+          this.closest('.quick-add').classList.add('multiline');
+        }
+      }, 0);
+    });
+    $('#quickAddBtn').addEventListener('click', () => quickAdd(qa.value));
 
     // 新建
     $('#btnNew').addEventListener('click', () => openNew());
@@ -1778,6 +2243,7 @@
       const act = btn ? btn.getAttribute('data-act') : null;
 
       if (act === 'toggle') { toggleDone(id); return; }
+      if (act === 'sel') { toggleSelect(id, e.shiftKey); return; }
       if (act === 'archive') { archiveTask(id); return; }
       if (act === 'delete') { deleteForever(id); return; }
       if (act === 'restore') { restoreTask(id); return; }
@@ -1786,6 +2252,7 @@
         openNew({ status: btn.getAttribute('data-status'), cat: state.view.indexOf('cat:') === 0 ? state.view.slice(4) : 'other' });
         return;
       }
+      state.navId = id;
       openTask(id);
     });
 
@@ -1896,7 +2363,8 @@
         dueTime: src.dueTime,
         note: src.note,
         tags: src.tags.slice(),
-        subs: src.subs.map(s => ({ id: uid(), title: s.title, done: false }))
+        subs: src.subs.map(s => ({ id: uid(), title: s.title, done: false })),
+        repeat: src.repeat
       });
       state.isNew = false;
       state.editingId = copy.id;
@@ -1921,6 +2389,12 @@
     $('#btnExportCsv').addEventListener('click', exportCSV);
     $('#btnPrint').addEventListener('click', printWeek);
     $('#btnRemind').addEventListener('click', toggleRemind);
+    $('#btnTheme').addEventListener('click', cycleTheme);
+    if (darkQuery) {
+      const onThemeMedia = () => { if (state.theme === 'auto') applyTheme(); };
+      if (darkQuery.addEventListener) darkQuery.addEventListener('change', onThemeMedia);
+      else if (darkQuery.addListener) darkQuery.addListener(onThemeMedia);
+    }
     $('#btnImport').addEventListener('click', () => $('#fileInput').click());
     $('#fileInput').addEventListener('change', function () {
       if (this.files && this.files[0]) importJSON(this.files[0]);
@@ -1954,6 +2428,8 @@
       if (e.key === 'Escape') {
         if ($('#helpMask').classList.contains('show')) { $('#helpMask').classList.remove('show'); return; }
         if (state.editingId) { closeDrawer(); return; }
+        if (state.sel.size) { clearSel(); return; }
+        if (document.activeElement === $('#quickAdd')) { $('#quickAdd').blur(); return; }
         if (document.activeElement === $('#search')) {
           state.search = ''; $('#search').value = ''; $('#search').blur(); renderAll();
         }
@@ -1966,10 +2442,7 @@
           const map = { '1': 'todo', '2': 'doing', '3': 'done' };
           const t = getTask(state.editingId);
           if (t) {
-            t.status = map[e.key];
-            t.completedAt = t.status === 'done' ? (t.completedAt || Date.now()) : null;
-            touch(t);
-            renderAll();
+            setStatus(t.id, map[e.key]);
             renderDrawer(t);
           }
           return;
@@ -1980,6 +2453,13 @@
       if (typing) return;
       if (e.key === 'n' || e.key === 'N') { e.preventDefault(); $('#quickAdd').focus(); }
       else if (e.key === '/') { e.preventDefault(); $('#search').focus(); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); navMove(1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); navMove(-1); }
+      else if (state.navId && (e.key === 'Enter' || e.key === ' ' || e.key.toLowerCase() === 's' ||
+               e.key === 'Delete' || e.key === 'Backspace')) {
+        e.preventDefault();
+        navAction(e.key === ' ' ? 'space' : e.key.toLowerCase() === 'enter' ? 'enter' : e.key.toLowerCase());
+      }
     });
   }
 
@@ -1989,10 +2469,14 @@
     if (inited) return;
     inited = true;
 
-    state.tasks = load();
+    const store = load();
+    state.tasks = store.tasks;
+    state.purged = store.purged;
     Object.assign(state, loadPrefs());
+    state.sel.clear();
     remind = loadRemind();
     bindEvents();
+    applyTheme();
     renderAll();
     saveBackup();
     updateRemindBtn();

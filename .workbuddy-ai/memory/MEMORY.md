@@ -22,21 +22,33 @@ Project09 是 Flask + SQLite 的本地台账（重，带报表和工时统计）
 - ⚠️ 重新发布会换域名，旧链接失效；发完记得把新链接同步到用户和本文件。
 
 ## 数据键名
-- 任务数据：`work-tasks.v1`
-- 界面偏好（视图/布局/筛选/排序/统计范围）：`work-tasks.prefs.v1`
+- 任务数据：`work-tasks.v1`（结构：`{ version, tasks, purged }`，purged 是彻底删除墓碑 `{id: 删除时间}`）
+- 界面偏好（视图/布局/筛选/排序/统计范围/主题）：`work-tasks.prefs.v1`
 - 每日提醒状态（enabled / last 已提醒日期）：`work-tasks.remind.v1`
 - 每日自动快照（保留 3 份）：`work-tasks.backup.v1`
 
 ## 核心设计决定（改动前先看）
 - **今天视图 = 所有未完成 + 今日已完成**。这是用户明确要求的，别再改回"只看今天到期"。
-- **删除 = 归档**（`archived`）。真要删才调 `deleteForever`。
+- **删除 = 归档**（`archived`）。真要删才调 `deleteForever`，并写 `state.purged[id]` 墓碑。
 - 所有统计/计数都要过滤 `!archived`，漏了就会出现归档后数字不降的 bug。
 - 手动排序走 `task.order`，仅在 `sort==='manual'` 且列表视图下可拖。
 - 打印走独立 `#printSheet` + `@media print`，不要试图用打印样式改造主界面。
-- 新建任务必须调 `ensureNewVisible()`，否则在统计/归档/已完成视图里会"加了看不见"。
+- 新建任务必须调 `ensureNewVisible(t)`，否则在统计/归档/已完成视图里会"加了看不见"；
+  搜索中新任务不命中关键词时它会清掉搜索。
 - 抽屉里文本输入用 `refreshSoon()`（180ms 合并），别直接 `renderContent()`，任务多了会卡。
+- **多标签页同步**：save() 写入前先 syncWithStore() 合并；storage 事件里 mergeRemote()。
+  合并规则：同 id 取 updatedAt 新者；删除靠 purged 墓碑压制复活。**别再写回"整包覆盖"式 save**。
+- **重复任务**：`task.repeat` ∈ REPEATS；完成本期调 spawnNextInstance 生成下一期，
+  `task.nextId` 指向已生成的那条防止反复"完成/取消完成"刷任务；改周期时清 nextId。
+- **批量选择**：state.sel(Set) + selAnchor + navId(键盘焦点)。批量用 bulkAction()，
+  它会 quietOps++ 压住逐条 renderAll，结束统一刷一次。选择只在列表视图。
+- **暗色模式**：颜色一律走 CSS 变量，禁止再写死 hex（本轮已把 100+ 处 token 化）。
+  `applyTheme()` 设 `data-theme`，深色下 JS 内联的浅底色板靠 `[data-theme=dark]` + color-mix 兜底。
 
 ## 自检方式
 本机有 chromium（`C:/Users/yanwx/AppData/Local/ms-playwright/chromium-1200/chrome-win64/chrome.exe`）
 和 `playwright-core`（装在 `C:/Users/yanwx/.workbuddy-ai/binaries/node/workspace/node_modules`），
-用 `NODE_PATH` 指向它即可跑浏览器自动化。验证脚本用完删掉，不留在项目里。
+用 `NODE_PATH` 指向它即可跑浏览器自动化。
+**验证脚本要起本地 http server（file:// 下跨标签页 storage 事件不可靠），
+path.resolve 后再 startsWith 校验目录，Windows 下 path.join 是反斜杠。**
+脚本用完删掉，不留在项目里（.verify/ 已 gitignore）。
