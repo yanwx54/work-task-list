@@ -1341,13 +1341,25 @@
     return rows;
   }
 
-  /* 日历里的任务：未归档、有截止日期；重复任务额外铺出未来 3 期 */
-  function calTasksByDay() {
+  /* 日历里的任务：未归档、有截止日期。
+     未完成：从录入那天一直铺到截止日（跨月裁到当月视图，截止在下月的铺到月末）；
+     已完成：只在截止日显示一条划掉的；重复任务额外铺未来 3 期虚拟预览 */
+  function calTasksByDay(ym) {
     const map = {};
-    const push = (day, t) => { (map[day] = map[day] || []).push(t); };
+    const push = (day, item) => { (map[day] = map[day] || []).push(item); };
+    const bounds = calMonthBounds(ym);
     state.tasks.forEach(t => {
       if (t.archived || !t.due) return;
-      push(t.due, { t: t, virtual: false });
+      if (t.status === 'done') {
+        push(t.due, { t: t, virtual: false, span: false });
+      } else {
+        let from = ymd(new Date(t.createdAt));
+        if (from < bounds.from) from = bounds.from;
+        if (from > t.due) from = t.due;
+        for (let d = from; d <= t.due && d <= bounds.to; d = addDays(d, 1)) {
+          push(d, { t: t, virtual: false, span: d !== t.due });
+        }
+      }
       if (t.repeat && t.repeat !== 'none' && t.status === 'done') {
         // 已完成、下一期还没生成：把未来 3 期虚拟铺出来（只读预览，点击落到真实任务上）
         const real = t.nextId && getTask(t.nextId) && !getTask(t.nextId).archived;
@@ -1356,13 +1368,14 @@
           for (let k = 0; k < 3; k++) {
             nd = nextRepeatDue(nd, t.repeat);
             if (!nd) break;
-            push(nd, { t: t, virtual: true });
+            push(nd, { t: t, virtual: true, span: false });
           }
         }
       }
     });
     Object.keys(map).forEach(day => {
-      map[day].sort((a, b) => (a.virtual - b.virtual) || (b.t.status === 'done' - a.t.status === 'done') ||
+      map[day].sort((a, b) => (a.virtual - b.virtual) || (a.span - b.span) ||
+        (b.t.status === 'done' - a.t.status === 'done') ||
         (a.t.dueTime || '99:99').localeCompare(b.t.dueTime || '99:99') || b.t.priority - a.t.priority);
     });
     return map;
@@ -1371,10 +1384,13 @@
   function calChipHTML(item) {
     const t = item.t;
     const cat = CATS[t.cat];
-    const label = (t.dueTime ? t.dueTime + ' ' : '') + (t.title || '未命名任务');
-    return `<div class="cal-event ${t.status === 'done' ? 'done' : ''} ${item.virtual ? 'virtual' : ''}"
+    // 持续日不带时间前缀（时间属于截止日）；截止日 / 已完成保留时间
+    const label = (!item.span && t.dueTime ? t.dueTime + ' ' : '') + (t.title || '未命名任务');
+    const tip = (item.virtual ? '（重复预览）' : item.span ? '（进行中 · ' + cat.name + '）' : '') + cat.name + ' · ' + label +
+      (t.due ? ' · 截止 ' + t.due : '');
+    return `<div class="cal-event ${t.status === 'done' ? 'done' : ''} ${item.virtual ? 'virtual' : ''} ${item.span ? 'span' : ''}"
       data-id="${t.id}" data-virtual="${item.virtual ? 1 : 0}" draggable="${item.virtual ? 'false' : 'true'}"
-      style="--cc:${cat.color}" title="${esc((item.virtual ? '（重复预览）' : '') + cat.name + ' · ' + label)}">
+      style="--cc:${cat.color}" title="${esc(tip)}">
       <i class="cal-edot"></i>${esc(label)}</div>`;
   }
 
@@ -1382,7 +1398,7 @@
     const ym = state.calMonth;
     const t = todayStr();
     if (!state.calSelDay || state.calSelDay.slice(0, 7) !== ym) state.calSelDay = t.slice(0, 7) === ym ? t : ym + '-01';
-    const byDay = calTasksByDay();
+    const byDay = calTasksByDay(ym);
     const monthLabel = ym.replace('-', ' 年 ') + ' 月';
     const wd = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 
@@ -1426,6 +1442,7 @@
             ${t2.priority ? `<span class="t-prio-tag" style="--pc:${prio.color};--pb:${prio.bg}">${prio.name}</span>` : ''}
             <span class="t-badge" style="--bc:${cat.color};--bc-bg:${cat.bg}">${cat.name}</span>
             ${item.virtual ? '<span class="t-badge" style="--bc:var(--muted)">重复预览</span>' : ''}
+            ${item.span ? '<span class="t-badge" style="--bc:' + cat.color + '">进行中 · 截止 ' + esc(fmtDue(t2.due)) + '</span>' : ''}
             ${overdue ? '<span class="t-badge" style="--bc:#d9463c">已逾期</span>' : ''}
           </div>
         </div>`;
@@ -1449,7 +1466,7 @@
         <div class="cal-grid" id="calGrid">
           <div class="cal-wdrow">${wd.map(x => `<div class="cal-wd">${x}</div>`).join('')}</div>
           ${grid}
-          <p class="cal-tip">拖动任务可改日期；点日期看当天任务；「今天」清单在左侧。</p>
+          <p class="cal-tip">任务从录入日起铺到截止日；拖动可改截止日；点日期看当天任务；「今天」清单在左侧。</p>
         </div>
         <div class="cal-daypanel" id="calDayPanel">
           <div class="cal-day-head2">

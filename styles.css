@@ -1389,6 +1389,10 @@ kbd {
 .cal-event:hover { background: color-mix(in srgb, var(--cc) 24%, var(--panel)); }
 .cal-event.done { color: var(--muted); text-decoration: line-through; background: var(--track); }
 .cal-event.done .cal-edot { background: var(--line-strong); }
+/* 持续日（未到截止日）：淡一档，截止日那条最实 */
+.cal-event.span { background: color-mix(in srgb, var(--cc) 8%, var(--panel)); color: color-mix(in srgb, var(--cc) 62%, var(--text-2)); }
+.cal-event.span:hover { background: color-mix(in srgb, var(--cc) 16%, var(--panel)); }
+.cal-event.span .cal-edot { opacity: .55; }
 .cal-event.virtual { border: 1px dashed color-mix(in srgb, var(--cc) 45%, transparent); background: transparent; color: color-mix(in srgb, var(--cc) 60%, var(--text-2)); }
 .cal-event.dragging { opacity: .35; }
 /* 不支持 color-mix 的旧浏览器：给个中性底 */
