@@ -1856,9 +1856,62 @@
     toast('已导出 ' + state.tasks.length + ' 条任务');
   }
 
-  function exportCSV() {
+  /* ---------------- CSV 导出：时间范围 ---------------- */
+  function csvRangeBounds(dlg) {
+    const t = todayStr();
+    if (dlg.range === 'week') {
+      const f = startOfWeek(t);
+      return { from: f, to: addDays(f, 6), label: '本周' };
+    }
+    if (dlg.range === 'month') {
+      const d = parseYmd(t);
+      return { from: ymd(new Date(d.getFullYear(), d.getMonth(), 1)),
+               to: ymd(new Date(d.getFullYear(), d.getMonth() + 1, 0)), label: '本月' };
+    }
+    if (dlg.range === 'lastmonth') {
+      const d = parseYmd(t);
+      return { from: ymd(new Date(d.getFullYear(), d.getMonth() - 1, 1)),
+               to: ymd(new Date(d.getFullYear(), d.getMonth(), 0)), label: '上月' };
+    }
+    if (dlg.range === 'custom') {
+      let from = dlg.from || null, to = dlg.to || null;
+      if (from && to && from > to) { const s = from; from = to; to = s; }
+      if (!from && !to) return { from: null, to: null, label: '全部' };
+      return { from: from, to: to, label: (from || '不限') + '~' + (to || '不限') };
+    }
+    return { from: null, to: null, label: '全部' };
+  }
+
+  /* 筛选口径：completed/due 没有该时间的任务不导出；smart 与分类统计一致 */
+  function csvRefDate(t, field) {
+    if (field === 'completed') return t.completedAt ? ymd(new Date(t.completedAt)) : null;
+    if (field === 'due') return t.due || null;
+    if (field === 'created') return ymd(new Date(t.createdAt));
+    if (t.status === 'done' && t.completedAt) return ymd(new Date(t.completedAt));
+    return t.due || ymd(new Date(t.createdAt));
+  }
+
+  function filterTasksForExport(dlg) {
+    const b = csvRangeBounds(dlg);
+    if (!b.from && !b.to) return state.tasks.filter(t => dlg.archived || !t.archived);
+    return state.tasks.filter(t => {
+      if (!dlg.archived && t.archived) return false;
+      const ref = csvRefDate(t, dlg.field);
+      if (!ref) return false;
+      if (b.from && ref < b.from) return false;
+      if (b.to && ref > b.to) return false;
+      return true;
+    });
+  }
+
+  function exportCSV(dlg) {
+    dlg = dlg || { range: 'all', field: 'smart', archived: true };
+    const b = csvRangeBounds(dlg);
+    const list = filterTasksForExport(dlg);
+    if (!list.length) { toast('这个范围内没有任务'); return false; }
+
     const head = ['标题', '分类', '状态', '优先级', '截止日期', '截止时间', '重复', '实际耗时(小时)', '标签', '子任务', '备注', '创建时间', '完成时间', '是否归档'];
-    const rows = state.tasks.map(t => [
+    const rows = list.map(t => [
       t.title,
       CATS[t.cat].name,
       STATUS_NAME[t.status],
@@ -1877,9 +1930,44 @@
     const csv = '\ufeff' + [head].concat(rows).map(r =>
       r.map(v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"').join(',')
     ).join('\r\n');
-    download('任务清单-' + todayStr() + '.csv', csv, 'text/csv;charset=utf-8');
-    toast('已导出 CSV');
+    const suffix = dlg.range === 'all' ? todayStr() : b.label;
+    download('任务清单-' + suffix + '.csv', csv, 'text/csv;charset=utf-8');
+    toast('已导出 ' + list.length + ' 条任务（' + b.label + '）');
+    return true;
   }
+
+  /* 导出弹窗 */
+  function readCsvDialog() {
+    const on = $('#csvRange .opt.on');
+    return {
+      range: on ? on.getAttribute('data-range') : 'all',
+      from: $('#csvFrom').value || null,
+      to: $('#csvTo').value || null,
+      field: $('#csvField').value || 'smart',
+      archived: $('#csvArchived').checked
+    };
+  }
+
+  function updateCsvCount() {
+    const n = filterTasksForExport(readCsvDialog()).length;
+    const el = $('#csvCount');
+    el.innerHTML = n ? '将导出 <b>' + n + '</b> 条任务'
+      : '<span class="csv-warn">这个范围内没有任务，换个范围或时间字段试试</span>';
+    $('#csvGo').disabled = !n;
+  }
+
+  function openCsvDialog() {
+    $$('#csvRange .opt').forEach(x => x.classList.toggle('on', x.getAttribute('data-range') === 'all'));
+    $('#csvCustom').style.display = 'none';
+    $('#csvFrom').value = '';
+    $('#csvTo').value = '';
+    $('#csvField').value = 'smart';
+    $('#csvArchived').checked = true;
+    updateCsvCount();
+    $('#csvMask').classList.add('show');
+  }
+
+  function closeCsvDialog() { $('#csvMask').classList.remove('show'); }
 
   function importJSON(file) {
     const reader = new FileReader();
@@ -2386,7 +2474,27 @@
 
     // 导出导入
     $('#btnExport').addEventListener('click', exportJSON);
-    $('#btnExportCsv').addEventListener('click', exportCSV);
+    $('#btnExportCsv').addEventListener('click', openCsvDialog);
+
+    // CSV 导出弹窗
+    $('#csvClose').addEventListener('click', closeCsvDialog);
+    $('#csvCancel').addEventListener('click', closeCsvDialog);
+    $('#csvMask').addEventListener('click', e => {
+      if (e.target === $('#csvMask')) closeCsvDialog();
+    });
+    $('#csvRange').addEventListener('click', e => {
+      const b = e.target.closest('[data-range]');
+      if (!b) return;
+      $$('#csvRange .opt').forEach(x => x.classList.toggle('on', x === b));
+      $('#csvCustom').style.display = b.getAttribute('data-range') === 'custom' ? '' : 'none';
+      updateCsvCount();
+    });
+    ['#csvFrom', '#csvTo', '#csvField', '#csvArchived'].forEach(sel => {
+      $(sel).addEventListener('change', updateCsvCount);
+    });
+    $('#csvGo').addEventListener('click', function () {
+      if (exportCSV(readCsvDialog())) closeCsvDialog();
+    });
     $('#btnPrint').addEventListener('click', printWeek);
     $('#btnRemind').addEventListener('click', toggleRemind);
     $('#btnTheme').addEventListener('click', cycleTheme);
@@ -2427,6 +2535,7 @@
 
       if (e.key === 'Escape') {
         if ($('#helpMask').classList.contains('show')) { $('#helpMask').classList.remove('show'); return; }
+        if ($('#csvMask').classList.contains('show')) { closeCsvDialog(); return; }
         if (state.editingId) { closeDrawer(); return; }
         if (state.sel.size) { clearSel(); return; }
         if (document.activeElement === $('#quickAdd')) { $('#quickAdd').blur(); return; }

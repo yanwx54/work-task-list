@@ -219,6 +219,11 @@
       <p>全部数据保存在本机浏览器（localStorage），不上传服务器。换电脑或清缓存前，请用左下角
         <b>下载</b> 按钮导出 JSON 备份，需要时用 <b>上传</b> 恢复。</p>
 
+      <h4>导出 CSV 表格</h4>
+      <p>点左下角表格图标后可以选择时间范围（全部 / 本周 / 本月 / 上月 / 自定义起止），
+        以及按哪个时间筛：完成时间、截止日期或创建时间（默认"智能"，与分类统计口径一致）。
+        弹窗里实时显示将导出的条数，可以勾选是否包含已归档任务。</p>
+
       <h4>自动备份</h4>
       <p id="backupInfo">每天首次打开会自动存一份快照，保留最近 3 份。</p>
       <div id="backupActions"></div>
@@ -248,6 +253,55 @@
         <li>重复任务完成后会自动生成下一期；「复制」仍可用于临时要办两遍的任务。</li>
         <li>开多个标签页同时看也不会互相覆盖，任何一边的改动另一边实时更新。</li>
       </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ============ CSV 导出：时间范围 ============ -->
+<div class="modal-mask" id="csvMask">
+  <div class="modal modal-sm">
+    <div class="modal-head">
+      <h3>导出 CSV 表格</h3>
+      <button class="icon-btn" id="csvClose"><svg><use href="#i-close"/></svg></button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label class="field-label">时间范围</label>
+        <div class="opt-row" id="csvRange">
+          <button class="opt on" data-range="all">全部</button>
+          <button class="opt" data-range="week">本周</button>
+          <button class="opt" data-range="month">本月</button>
+          <button class="opt" data-range="lastmonth">上月</button>
+          <button class="opt" data-range="custom">自定义</button>
+        </div>
+      </div>
+
+      <div class="field" id="csvCustom" style="display:none">
+        <label class="field-label">起止日期</label>
+        <div class="date-row">
+          <input type="date" id="csvFrom">
+          <span class="csv-dash">—</span>
+          <input type="date" id="csvTo">
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="field-label">按哪个时间筛选</label>
+        <select id="csvField" class="field-select">
+          <option value="smart">智能（已完成看完成时间，其余看截止日期）</option>
+          <option value="completed">完成时间</option>
+          <option value="due">截止日期</option>
+          <option value="created">创建时间</option>
+        </select>
+      </div>
+
+      <label class="csv-check"><input type="checkbox" id="csvArchived" checked> 包含已归档任务</label>
+
+      <p class="csv-count" id="csvCount">将导出 0 条任务</p>
+    </div>
+    <div class="modal-foot">
+      <button class="btn-ghost" id="csvCancel">取消</button>
+      <button class="btn-primary" id="csvGo">导出 CSV</button>
     </div>
   </div>
 </div>

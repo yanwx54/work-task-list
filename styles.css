@@ -653,6 +653,8 @@ mark.hl { background: var(--mark-bg); color: inherit; border-radius: 2px; paddin
   transition: all .14s;
 }
 .btn-ghost:hover { background: var(--bg); color: var(--text); }
+.btn-primary:disabled, .btn-ghost:disabled, .btn-primary[disabled] { opacity: .5; cursor: not-allowed; box-shadow: none; }
+.btn-primary:disabled:hover { background: var(--brand); }
 .btn-ghost svg { width: 14px; height: 14px; }
 .btn-ghost.danger { color: var(--danger); border-color: var(--danger-bd); }
 .btn-ghost.danger:hover { background: var(--danger-soft); }
@@ -996,6 +998,42 @@ textarea.field-input { height: auto; min-height: 76px; padding: 9px 10px; resize
   border-bottom: 1px solid var(--line);
 }
 .modal-head h3 { margin: 0; font-size: 15px; font-weight: 650; }
+.modal-sm { width: 420px; }
+.modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--line);
+  flex: 0 0 auto;
+}
+.modal-body .field:last-of-type { margin-bottom: 12px; }
+.field-select {
+  height: 32px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 7px;
+  padding: 0 10px;
+  font-size: 13px;
+  color: var(--text-2);
+  width: 100%;
+  cursor: pointer;
+}
+.field-select:focus { border-color: var(--focus); }
+.csv-dash { color: var(--muted); }
+.csv-check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--text-2);
+  cursor: pointer;
+  user-select: none;
+}
+.csv-check input { accent-color: var(--brand); width: 15px; height: 15px; }
+.csv-count { margin: 14px 0 0; font-size: 12.5px; color: var(--muted); }
+.csv-count b { color: var(--brand-dark); font-variant-numeric: tabular-nums; }
+.csv-count .csv-warn { color: var(--danger-text); }
 .modal-body { padding: 16px 20px 22px; overflow-y: auto; font-size: 13px; color: var(--text-2); line-height: 1.7; }
 .modal-body h4 { margin: 16px 0 6px; font-size: 12.5px; color: var(--text); letter-spacing: .3px; }
 .modal-body h4:first-child { margin-top: 0; }
