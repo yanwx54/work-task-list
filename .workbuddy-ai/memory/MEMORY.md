@@ -46,12 +46,14 @@ Project09 是 Flask + SQLite 的本地台账（重，带报表和工时统计）
   它会 quietOps++ 压住逐条 renderAll，结束统一刷一次。选择只在列表视图。
 - **暗色模式**：颜色一律走 CSS 变量，禁止再写死 hex（本轮已把 100+ 处 token 化）。
   `applyTheme()` 设 `data-theme`，深色下 JS 内联的浅底色板靠 `[data-theme=dark]` + color-mix 兜底。
-- **日历**：`calTasksByDay(ym)` 铺展规则（用户 2026-11-11 点名）：**未完成任务从录入日(createdAt，
-  跨月裁到当月1号)一直铺到截止日**，每格 item 带 `span` 标记（持续日淡档 .span，截止日实档）；
-  完成 = 中间铺展消失、只在截止日留划掉的；逾期钉在截止日不往后铺；下月截止铺到本月末。
-  拖任意铺展日 = 改 due。重复任务已完成且无真实 nextId 时铺未来 3 期**虚拟预览**
-  （`data-virtual=1`，不参与铺展、不可勾选/拖拽，点击打开真实本期）。
-  日历视图下隐藏统计卡与工具栏（renderAll 的 isCal 分支）。
+- **日历**：`calTasksByDay()` 只收未归档 + 有 due 的任务，**只铺在截止日**（曾做过"录入日→截止日
+  全程铺展"，用户看后要求回退，2026-11-11 已恢复；别再往那个方向改）。拖色片 = 改 due，带撤销 toast。
+  重复任务已完成且下一期未生成时铺未来 3 期**虚拟预览**（`data-virtual=1`，不可勾选/拖拽，
+  点击打开真实本期）。日历视图下隐藏统计卡与工具栏（renderAll 的 isCal 分支）。
+- **农历**：`lunarOf()` 基于 `Intl.DateTimeFormat('zh-CN-u-ca-chinese')`（浏览器内置，含闰月，零依赖），
+  日名自己映射 LUNAR_DAY（初一显示月名）；节日 = LUNAR_FEST（农历）+ SOLAR_FEST（公历，公历优先），
+  除夕特判（腊月廿九且次日正月初一）。`lunarCache` 每次 renderCalendarPanel 清空重算（42 格约 2ms）。
+  Intl 不可用时整体静默降级。移动端只留节日。
 
 ## 自检方式
 本机有 chromium（`C:/Users/yanwx/AppData/Local/ms-playwright/chromium-1200/chrome-win64/chrome.exe`）

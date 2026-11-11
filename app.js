@@ -577,6 +577,69 @@
     renderAll();
   }
 
+  /* ---------------- 农历 ----------------
+     用浏览器内置的中国历法（Intl u-ca-chinese），零依赖、含闰月；
+     拿不到就整体降级（不显示农历），不影响其他功能 */
+  const lunarFmt = (function () {
+    try {
+      const f = new Intl.DateTimeFormat('zh-CN-u-ca-chinese', { year: 'numeric', month: 'numeric', day: 'numeric' });
+      if (f.resolvedOptions().calendar !== 'chinese') return null;
+      return f;
+    } catch (e) { return null; }
+  })();
+
+  const LUNAR_DAY = ['初一','初二','初三','初四','初五','初六','初七','初八','初九','初十',
+    '十一','十二','十三','十四','十五','十六','十七','十八','十九','二十',
+    '廿一','廿二','廿三','廿四','廿五','廿六','廿七','廿八','廿九','三十'];
+
+  /* 返回 { month, day, label } 或 null；label 优先节日，其次农历日 */
+  function lunarOf(dateStr) {
+    if (!lunarFmt) return null;
+    const ps = lunarFmt.formatToParts(parseYmd(dateStr));
+    const month = (ps.find(p => p.type === 'month') || {}).value || '';
+    const dayN = Number((ps.find(p => p.type === 'day') || {}).value || 0);
+    if (!month || !dayN) return null;
+    // 初一显示月名（正月/十月/闰六月…），其余显示农历日；节日另存
+    return { month: month, day: dayN, label: dayN === 1 ? month : (LUNAR_DAY[dayN - 1] || ''), dayName: LUNAR_DAY[dayN - 1] || '', fest: festivalOf(month, dayN, dateStr) };
+  }
+
+  /* 传统节日：按农历月日判断（除夕看明天是不是正月初一） */
+  const LUNAR_FEST = {
+    '正月1': '春节', '正月15': '元宵', '五月5': '端午', '七月7': '七夕',
+    '八月15': '中秋', '九月9': '重阳', '腊月8': '腊八', '腊月23': '小年', '腊月30': '除夕'
+  };
+  /* 公历节日优先于农历日（主流日历习惯） */
+  const SOLAR_FEST = {
+    '01-01': '元旦', '02-14': '情人节', '03-08': '妇女节', '03-12': '植树节',
+    '05-01': '劳动节', '05-04': '青年节', '06-01': '儿童节', '09-10': '教师节',
+    '10-01': '国庆节', '12-24': '平安夜', '12-25': '圣诞节'
+  };
+  function festivalOf(month, day, dateStr) {
+    const key = month + day;
+    if (LUNAR_FEST[key]) return LUNAR_FEST[key];
+    if (month === '腊月' && day === 29) {
+      // 腊月廿九是否除夕：小月（无三十）时廿九就是除夕
+      const nx = lunarPartsRaw(addDays(dateStr, 1));
+      if (nx && nx.month === '正月' && nx.day === 1) return '除夕';
+    }
+    return SOLAR_FEST[dateStr.slice(5)] || '';
+  }
+  function lunarPartsRaw(dateStr) {
+    if (!lunarFmt) return null;
+    const ps = lunarFmt.formatToParts(parseYmd(dateStr));
+    return {
+      month: (ps.find(p => p.type === 'month') || {}).value || '',
+      day: Number((ps.find(p => p.type === 'day') || {}).value || 0)
+    };
+  }
+
+  /* 月视图要算 42 格 + 相邻日，缓存一次 */
+  let lunarCache = {};
+  function lunarCached(dateStr) {
+    if (!(dateStr in lunarCache)) lunarCache[dateStr] = lunarOf(dateStr);
+    return lunarCache[dateStr];
+  }
+
   /* ---------------- 视图过滤 ---------------- */
   function viewBase(view) {
     const t = todayStr();
@@ -1341,25 +1404,13 @@
     return rows;
   }
 
-  /* 日历里的任务：未归档、有截止日期。
-     未完成：从录入那天一直铺到截止日（跨月裁到当月视图，截止在下月的铺到月末）；
-     已完成：只在截止日显示一条划掉的；重复任务额外铺未来 3 期虚拟预览 */
-  function calTasksByDay(ym) {
+  /* 日历里的任务：未归档、有截止日期；重复任务额外铺出未来 3 期 */
+  function calTasksByDay() {
     const map = {};
-    const push = (day, item) => { (map[day] = map[day] || []).push(item); };
-    const bounds = calMonthBounds(ym);
+    const push = (day, t) => { (map[day] = map[day] || []).push(t); };
     state.tasks.forEach(t => {
       if (t.archived || !t.due) return;
-      if (t.status === 'done') {
-        push(t.due, { t: t, virtual: false, span: false });
-      } else {
-        let from = ymd(new Date(t.createdAt));
-        if (from < bounds.from) from = bounds.from;
-        if (from > t.due) from = t.due;
-        for (let d = from; d <= t.due && d <= bounds.to; d = addDays(d, 1)) {
-          push(d, { t: t, virtual: false, span: d !== t.due });
-        }
-      }
+      push(t.due, { t: t, virtual: false });
       if (t.repeat && t.repeat !== 'none' && t.status === 'done') {
         // 已完成、下一期还没生成：把未来 3 期虚拟铺出来（只读预览，点击落到真实任务上）
         const real = t.nextId && getTask(t.nextId) && !getTask(t.nextId).archived;
@@ -1368,14 +1419,13 @@
           for (let k = 0; k < 3; k++) {
             nd = nextRepeatDue(nd, t.repeat);
             if (!nd) break;
-            push(nd, { t: t, virtual: true, span: false });
+            push(nd, { t: t, virtual: true });
           }
         }
       }
     });
     Object.keys(map).forEach(day => {
-      map[day].sort((a, b) => (a.virtual - b.virtual) || (a.span - b.span) ||
-        (b.t.status === 'done' - a.t.status === 'done') ||
+      map[day].sort((a, b) => (a.virtual - b.virtual) || (b.t.status === 'done' - a.t.status === 'done') ||
         (a.t.dueTime || '99:99').localeCompare(b.t.dueTime || '99:99') || b.t.priority - a.t.priority);
     });
     return map;
@@ -1384,13 +1434,10 @@
   function calChipHTML(item) {
     const t = item.t;
     const cat = CATS[t.cat];
-    // 持续日不带时间前缀（时间属于截止日）；截止日 / 已完成保留时间
-    const label = (!item.span && t.dueTime ? t.dueTime + ' ' : '') + (t.title || '未命名任务');
-    const tip = (item.virtual ? '（重复预览）' : item.span ? '（进行中 · ' + cat.name + '）' : '') + cat.name + ' · ' + label +
-      (t.due ? ' · 截止 ' + t.due : '');
-    return `<div class="cal-event ${t.status === 'done' ? 'done' : ''} ${item.virtual ? 'virtual' : ''} ${item.span ? 'span' : ''}"
+    const label = (t.dueTime ? t.dueTime + ' ' : '') + (t.title || '未命名任务');
+    return `<div class="cal-event ${t.status === 'done' ? 'done' : ''} ${item.virtual ? 'virtual' : ''}"
       data-id="${t.id}" data-virtual="${item.virtual ? 1 : 0}" draggable="${item.virtual ? 'false' : 'true'}"
-      style="--cc:${cat.color}" title="${esc(tip)}">
+      style="--cc:${cat.color}" title="${esc((item.virtual ? '（重复预览）' : '') + cat.name + ' · ' + label)}">
       <i class="cal-edot"></i>${esc(label)}</div>`;
   }
 
@@ -1398,7 +1445,8 @@
     const ym = state.calMonth;
     const t = todayStr();
     if (!state.calSelDay || state.calSelDay.slice(0, 7) !== ym) state.calSelDay = t.slice(0, 7) === ym ? t : ym + '-01';
-    const byDay = calTasksByDay(ym);
+    const byDay = calTasksByDay();
+    lunarCache = {}; // 换月/跨天后重算
     const monthLabel = ym.replace('-', ' 年 ') + ' 月';
     const wd = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 
@@ -1413,12 +1461,16 @@
           if (day === state.calSelDay) cls.push('sel');
           if (ci >= 5) cls.push('weekend');
           const dayNum = Number(day.slice(8));
+          const lunar = lunarCached(day);
+          const lLabel = lunar ? (lunar.fest || lunar.label) : '';
+          const lCls = lunar && lunar.fest ? ' fest' : '';
           const shown = items.slice(0, 3);
           const events = shown.map(calChipHTML).join('');
           const more = items.length > shown.length
             ? `<button class="cal-more" data-more="${day}">还有 ${items.length - shown.length} 项</button>` : '';
           return `<div class="${cls.join(' ')}" data-day="${day}">
             <div class="cal-day-head"><span class="cal-daynum">${dayNum}</span></div>
+            <div class="cal-lunar${lCls}" title="${lunar ? esc(lunar.month + lunar.dayName + (lunar.fest ? ' · ' + lunar.fest : '')) : ''}">${esc(lLabel)}</div>
             <div class="cal-events">${events}${more}</div>
           </div>`;
         }).join('')}
@@ -1426,6 +1478,8 @@
 
     const selItems = byDay[state.calSelDay] || [];
     const selDate = parseYmd(state.calSelDay);
+    const selL = lunarCached(state.calSelDay);
+    const selLunar = selL ? (selL.month + selL.dayName + (selL.fest ? ' · ' + selL.fest : '')) : '';
     const openN = selItems.filter(x => x.t.status !== 'done' && !x.virtual).length;
     const liveCount = state.tasks.filter(x => !x.archived).length;
     const dayList = selItems.length ? selItems.map(item => {
@@ -1442,7 +1496,6 @@
             ${t2.priority ? `<span class="t-prio-tag" style="--pc:${prio.color};--pb:${prio.bg}">${prio.name}</span>` : ''}
             <span class="t-badge" style="--bc:${cat.color};--bc-bg:${cat.bg}">${cat.name}</span>
             ${item.virtual ? '<span class="t-badge" style="--bc:var(--muted)">重复预览</span>' : ''}
-            ${item.span ? '<span class="t-badge" style="--bc:' + cat.color + '">进行中 · 截止 ' + esc(fmtDue(t2.due)) + '</span>' : ''}
             ${overdue ? '<span class="t-badge" style="--bc:#d9463c">已逾期</span>' : ''}
           </div>
         </div>`;
@@ -1466,11 +1519,11 @@
         <div class="cal-grid" id="calGrid">
           <div class="cal-wdrow">${wd.map(x => `<div class="cal-wd">${x}</div>`).join('')}</div>
           ${grid}
-          <p class="cal-tip">任务从录入日起铺到截止日；拖动可改截止日；点日期看当天任务；「今天」清单在左侧。</p>
+          <p class="cal-tip">拖动任务可改日期；点日期看当天任务；「今天」清单在左侧。</p>
         </div>
         <div class="cal-daypanel" id="calDayPanel">
           <div class="cal-day-head2">
-            <b>${Number(state.calSelDay.slice(8))} 日 · 周${'日一二三四五六'[selDate.getDay()]}${state.calSelDay === t ? '（今天）' : ''}</b>
+            <b>${Number(state.calSelDay.slice(8))} 日 · 周${'日一二三四五六'[selDate.getDay()]}${state.calSelDay === t ? '（今天）' : ''}<span class="cal-day-lunar">${esc(selLunar)}</span></b>
             <span>${openN ? openN + ' 项待办' : '没有待办'}</span>
           </div>
           <div class="cal-daylist">${dayList}</div>

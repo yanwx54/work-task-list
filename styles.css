@@ -1331,10 +1331,22 @@ kbd {
 .cal-day.weekend { background: var(--panel-2); }
 .cal-day:hover { background: var(--bg); }
 .cal-day.out { background: var(--panel); }
-.cal-day.out .cal-daynum, .cal-day.out .cal-event { opacity: .38; }
+.cal-day.out .cal-daynum, .cal-day.out .cal-event, .cal-day.out .cal-lunar { opacity: .38; }
 .cal-day.out:hover { background: var(--bg); }
 
 .cal-day-head { display: flex; align-items: center; justify-content: flex-start; height: 24px; }
+.cal-lunar {
+  font-size: 10px;
+  line-height: 1.2;
+  color: var(--muted);
+  margin: -3px 0 1px 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cal-lunar.fest { color: var(--brand-dark); font-weight: 600; }
+.cal-day.today .cal-lunar { color: var(--text-2); }
+.cal-day-lunar { font-weight: 400; font-size: 12px; color: var(--muted); margin-left: 8px; }
 .cal-daynum {
   font-size: 12.5px;
   font-weight: 500;
@@ -1389,10 +1401,6 @@ kbd {
 .cal-event:hover { background: color-mix(in srgb, var(--cc) 24%, var(--panel)); }
 .cal-event.done { color: var(--muted); text-decoration: line-through; background: var(--track); }
 .cal-event.done .cal-edot { background: var(--line-strong); }
-/* 持续日（未到截止日）：淡一档，截止日那条最实 */
-.cal-event.span { background: color-mix(in srgb, var(--cc) 8%, var(--panel)); color: color-mix(in srgb, var(--cc) 62%, var(--text-2)); }
-.cal-event.span:hover { background: color-mix(in srgb, var(--cc) 16%, var(--panel)); }
-.cal-event.span .cal-edot { opacity: .55; }
 .cal-event.virtual { border: 1px dashed color-mix(in srgb, var(--cc) 45%, transparent); background: transparent; color: color-mix(in srgb, var(--cc) 60%, var(--text-2)); }
 .cal-event.dragging { opacity: .35; }
 /* 不支持 color-mix 的旧浏览器：给个中性底 */
@@ -1455,6 +1463,9 @@ kbd {
   .cal-more { display: none; }
   .cal-legend { display: none; }
   .cal-daynum { min-width: 20px; height: 20px; font-size: 11.5px; }
+  /* 空间有限：普通农历日隐藏，只留节日 */
+  .cal-lunar:not(.fest) { display: none; }
+  .cal-day-head { height: 20px; }
 }
 
 /* ============ 打印：A4 周计划 ============ */
