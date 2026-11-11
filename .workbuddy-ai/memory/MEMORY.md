@@ -28,7 +28,9 @@ Project09 是 Flask + SQLite 的本地台账（重，带报表和工时统计）
 - 每日自动快照（保留 3 份）：`work-tasks.backup.v1`
 
 ## 核心设计决定（改动前先看）
-- **今天视图 = 所有未完成 + 今日已完成**。这是用户明确要求的，别再改回"只看今天到期"。
+- **默认首页 = 日历**（用户 2026-11-11 明确要求：首页月视图放任务，下一页才是列表）。
+  日历状态：`state.calMonth`（'YYYY-MM'）+ `state.calSelDay`；日历下快添/新建默认落选中日。
+- **「今天」清单 = 所有未完成 + 今日已完成**。这是用户明确要求的，别再改回"只看今天到期"。
 - **删除 = 归档**（`archived`）。真要删才调 `deleteForever`，并写 `state.purged[id]` 墓碑。
 - 所有统计/计数都要过滤 `!archived`，漏了就会出现归档后数字不降的 bug。
 - 手动排序走 `task.order`，仅在 `sort==='manual'` 且列表视图下可拖。
@@ -44,6 +46,9 @@ Project09 是 Flask + SQLite 的本地台账（重，带报表和工时统计）
   它会 quietOps++ 压住逐条 renderAll，结束统一刷一次。选择只在列表视图。
 - **暗色模式**：颜色一律走 CSS 变量，禁止再写死 hex（本轮已把 100+ 处 token 化）。
   `applyTheme()` 设 `data-theme`，深色下 JS 内联的浅底色板靠 `[data-theme=dark]` + color-mix 兜底。
+- **日历**：`calTasksByDay()` 只收未归档 + 有 due 的任务；重复任务已完成且下一期未生成时铺
+  未来 3 期**虚拟预览**（`data-virtual=1`，不可勾选/拖拽，点击打开真实本期）；拖色片 = 改 due，
+  带撤销 toast。日历视图下隐藏统计卡与工具栏（renderAll 的 isCal 分支）。
 
 ## 自检方式
 本机有 chromium（`C:/Users/yanwx/AppData/Local/ms-playwright/chromium-1200/chrome-win64/chrome.exe`）

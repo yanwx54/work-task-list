@@ -62,6 +62,7 @@
   }
 
   const VIEW_META = {
+    calendar: { title: '日历',     sub: '按月查看与安排任务' },
     today:   { title: '今天',       sub: '所有未完成的任务都在这里' },
     week:    { title: '未来 7 天',  sub: '提前看到接下来一周的安排' },
     overdue: { title: '已逾期',     sub: '需要尽快处理或调整计划' },
@@ -78,13 +79,15 @@
   /* ---------------- 状态 ---------------- */
   const state = {
     tasks: [],
-    view: 'today',
+    view: 'calendar',
     layout: 'list',
     status: 'all',
     sort: 'smart',
     search: '',
     statsRange: 'month',
     theme: 'auto',
+    calMonth: todayStr().slice(0, 7), // 'YYYY-MM'，日历当前月
+    calSelDay: todayStr(),             // 日历选中日（下方当日清单）
     editingId: null,
     isNew: false,
     lastDeleted: null,
@@ -374,7 +377,7 @@
     try {
       const p = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
       return {
-        view: VIEW_META[p.view] ? p.view : 'today',
+        view: VIEW_META[p.view] ? p.view : 'calendar',
         layout: p.layout === 'board' ? 'board' : 'list',
         status: ['all', 'todo', 'doing', 'done'].indexOf(p.status) >= 0 ? p.status : 'all',
         sort: ['smart', 'due', 'priority', 'created', 'manual'].indexOf(p.sort) >= 0 ? p.sort : 'smart',
@@ -382,7 +385,7 @@
         theme: ['auto', 'light', 'dark'].indexOf(p.theme) >= 0 ? p.theme : 'auto'
       };
     } catch (e) {
-      return { view: 'today', layout: 'list', status: 'all', sort: 'smart', statsRange: 'month', theme: 'auto' };
+      return { view: 'calendar', layout: 'list', status: 'all', sort: 'smart', statsRange: 'month', theme: 'auto' };
     }
   }
 
@@ -711,7 +714,9 @@
       x.status === 'done' && x.completedAt && ymd(new Date(x.completedAt)) === t
     ).length;
 
+    const mb = calMonthBounds(todayStr().slice(0, 7));
     const c = {
+      calendar: open.filter(x => x.due && x.due >= mb.from && x.due <= mb.to).length,
       today: open.length + doneToday,
       week: open.filter(x => x.due && x.due >= t && x.due <= end).length,
       overdue: open.filter(x => x.due && x.due < t).length,
@@ -895,6 +900,13 @@
     if (state.view === 'stats') {
       el.innerHTML = renderStatsPanel();
       bindStatsPanel();
+      return;
+    }
+
+    // 日历首页：月视图 + 选中日清单
+    if (state.view === 'calendar') {
+      el.innerHTML = renderCalendarPanel();
+      bindCalendarPanel();
       return;
     }
 
@@ -1307,6 +1319,263 @@
     });
   }
 
+  /* ---------------- 渲染：日历首页 ---------------- */
+  function aliveOpen() {
+    return state.tasks.filter(x => !x.archived && x.status !== 'done');
+  }
+  function calMonthBounds(ym) {
+    const d = parseYmd(ym + '-01');
+    return { from: ymd(d), to: ymd(new Date(d.getFullYear(), d.getMonth() + 1, 0)) };
+  }
+
+  function monthMatrix(ym) {
+    const ws = startOfWeek(ym + '-01'); // 周一为一周起点
+    const rows = [];
+    for (let w = 0; w < 6; w++) {
+      const row = [];
+      for (let i = 0; i < 7; i++) row.push(addDays(ws, w * 7 + i));
+      // 周是连续的，第一次出现整周都不在本月即可停
+      if (row[0].slice(0, 7) !== ym && row[6].slice(0, 7) !== ym) break;
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  /* 日历里的任务：未归档、有截止日期；重复任务额外铺出未来 3 期 */
+  function calTasksByDay() {
+    const map = {};
+    const push = (day, t) => { (map[day] = map[day] || []).push(t); };
+    state.tasks.forEach(t => {
+      if (t.archived || !t.due) return;
+      push(t.due, { t: t, virtual: false });
+      if (t.repeat && t.repeat !== 'none' && t.status === 'done') {
+        // 已完成、下一期还没生成：把未来 3 期虚拟铺出来（只读预览，点击落到真实任务上）
+        const real = t.nextId && getTask(t.nextId) && !getTask(t.nextId).archived;
+        if (!real) {
+          let nd = t.due;
+          for (let k = 0; k < 3; k++) {
+            nd = nextRepeatDue(nd, t.repeat);
+            if (!nd) break;
+            push(nd, { t: t, virtual: true });
+          }
+        }
+      }
+    });
+    Object.keys(map).forEach(day => {
+      map[day].sort((a, b) => (a.virtual - b.virtual) || (b.t.status === 'done' - a.t.status === 'done') ||
+        (a.t.dueTime || '99:99').localeCompare(b.t.dueTime || '99:99') || b.t.priority - a.t.priority);
+    });
+    return map;
+  }
+
+  function calChipHTML(item) {
+    const t = item.t;
+    const cat = CATS[t.cat];
+    const label = (t.dueTime ? t.dueTime + ' ' : '') + (t.title || '未命名任务');
+    return `<div class="cal-chip ${t.status === 'done' ? 'done' : ''} ${item.virtual ? 'virtual' : ''}"
+      data-id="${t.id}" data-virtual="${item.virtual ? 1 : 0}" draggable="${item.virtual ? 'false' : 'true'}"
+      style="--cc:${cat.color}" title="${esc((item.virtual ? '（重复预览）' : '') + cat.name + ' · ' + label)}">
+      <i class="cal-dot"></i>${esc(label)}</div>`;
+  }
+
+  function renderCalendarPanel() {
+    const ym = state.calMonth;
+    const t = todayStr();
+    if (!state.calSelDay || state.calSelDay.slice(0, 7) !== ym) state.calSelDay = t.slice(0, 7) === ym ? t : ym + '-01';
+    const byDay = calTasksByDay();
+    const monthLabel = ym.replace('-', ' 年 ') + ' 月';
+    const wd = ['一', '二', '三', '四', '五', '六', '日'];
+
+    const grid = monthMatrix(ym).map(row => `
+      <div class="cal-week">
+        ${row.map(day => {
+          const items = byDay[day] || [];
+          const inMonth = day.slice(0, 7) === ym;
+          const cls = ['cal-day'];
+          if (!inMonth) cls.push('out');
+          if (day === t) cls.push('today');
+          if (day === state.calSelDay) cls.push('sel');
+          if (items.length && !items.every(x => x.t.status === 'done')) cls.push('has-open');
+          const dayNum = Number(day.slice(8));
+          const chips = items.slice(0, 3).map(calChipHTML).join('');
+          const more = items.length > 3 ? `<div class="cal-more" data-more="${day}">+${items.length - 3} 更多</div>` : '';
+          return `<div class="${cls.join(' ')}" data-day="${day}">
+            <div class="cal-day-head"><span class="cal-daynum">${dayNum}</span>
+              ${items.length ? `<span class="cal-daycount">${items.filter(x => x.t.status !== 'done').length || ''}</span>` : ''}</div>
+            <div class="cal-chips">${chips}${more}</div>
+          </div>`;
+        }).join('')}
+      </div>`).join('');
+
+    const selItems = byDay[state.calSelDay] || [];
+    const selDate = parseYmd(state.calSelDay);
+    const openN = selItems.filter(x => x.t.status !== 'done' && !x.virtual).length;
+    const liveCount = state.tasks.filter(x => !x.archived).length;
+    const dayList = selItems.length ? selItems.map(item => {
+      const t2 = item.t;
+      const cat = CATS[t2.cat];
+      const prio = PRIOS[t2.priority] || PRIOS[0];
+      const overdue = t2.status !== 'done' && t2.due < todayStr();
+      return `
+        <div class="cal-task ${t2.status === 'done' ? 'done' : ''}" data-id="${t2.id}" data-virtual="${item.virtual ? 1 : 0}">
+          <button class="t-check" data-act="toggle" ${item.virtual ? 'disabled' : ''}><svg><use href="#i-check"/></svg></button>
+          <div class="t-main" data-act="open">
+            <span class="t-title">${esc(t2.title || '未命名任务')}</span>
+            ${t2.dueTime ? `<span class="t-due"><svg><use href="#i-clock"/></svg>${esc(t2.dueTime)}</span>` : ''}
+            ${t2.priority ? `<span class="t-prio-tag" style="--pc:${prio.color};--pb:${prio.bg}">${prio.name}</span>` : ''}
+            <span class="t-badge" style="--bc:${cat.color};--bc-bg:${cat.bg}">${cat.name}</span>
+            ${item.virtual ? '<span class="t-badge" style="--bc:var(--muted)">重复预览</span>' : ''}
+            ${overdue ? '<span class="t-badge" style="--bc:#d9463c">已逾期</span>' : ''}
+          </div>
+        </div>`;
+    }).join('') : `<div class="cal-day-empty">${liveCount ? '这一天还没有安排。' : '还没有任务，先添加一条，或者载入几条示例看看各类工作怎么归类。'}
+      <button class="btn-ghost" id="calAddDay" style="height:26px;font-size:12px;margin-left:8px">＋ 添加任务</button>
+      ${liveCount ? '' : '<button class="btn-ghost" id="calDemo" style="height:26px;font-size:12px;margin-left:6px">载入示例数据</button>'}</div>`;
+
+    return `
+      <div class="cal-wrap">
+        <div class="cal-head">
+          <div class="cal-nav">
+            <button class="icon-btn" data-cal="prev" title="上个月"><svg><use href="#i-chev-l"/></svg></button>
+            <b class="cal-month">${monthLabel}</b>
+            <button class="icon-btn" data-cal="next" title="下个月"><svg><use href="#i-chev-r"/></svg></button>
+            <button class="btn-ghost" data-cal="today" style="height:26px;font-size:12px;margin-left:6px">回到今天</button>
+          </div>
+          <div class="cal-legend">
+            ${CAT_KEYS.map(k => `<span><i style="background:${CATS[k].color}"></i>${CATS[k].name}</span>`).join('')}
+          </div>
+        </div>
+        <div class="cal-grid" id="calGrid">
+          <div class="cal-wdrow">${wd.map(x => `<div class="cal-wd">${x}</div>`).join('')}</div>
+          ${grid}
+          <p class="cal-tip">拖动任务可改日期；点日期看当天任务；「今天」清单在左侧。</p>
+        </div>
+        <div class="cal-daypanel" id="calDayPanel">
+          <div class="cal-day-head2">
+            <b>${Number(state.calSelDay.slice(8))} 日 · 周${'日一二三四五六'[selDate.getDay()]}${state.calSelDay === t ? '（今天）' : ''}</b>
+            <span>${openN ? openN + ' 项待办' : '没有待办'}</span>
+          </div>
+          <div class="cal-daylist">${dayList}</div>
+        </div>
+      </div>`;
+  }
+
+  function calShiftMonth(ym, delta) {
+    const d = parseYmd(ym + '-01');
+    d.setMonth(d.getMonth() + delta);
+    return ymd(d).slice(0, 7);
+  }
+
+  function bindCalendarPanel() {
+    $$('#content [data-cal]').forEach(b => {
+      b.onclick = function () {
+        const a = b.getAttribute('data-cal');
+        if (a === 'prev') state.calMonth = calShiftMonth(state.calMonth, -1);
+        else if (a === 'next') state.calMonth = calShiftMonth(state.calMonth, 1);
+        else if (a === 'today') { state.calMonth = todayStr().slice(0, 7); state.calSelDay = todayStr(); }
+        renderContent();
+      };
+    });
+
+    const grid = $('#calGrid');
+    if (!grid) return;
+
+    grid.addEventListener('click', e => {
+      const more = e.target.closest('[data-more]');
+      if (more) { state.calSelDay = more.getAttribute('data-more'); renderContent(); scrollDayPanel(); return; }
+      const chip = e.target.closest('.cal-chip');
+      if (chip) {
+        const id = chip.getAttribute('data-id');
+        const dayEl = chip.closest('.cal-day');
+        if (dayEl) state.calSelDay = dayEl.getAttribute('data-day'); // 点色片同时选中这天
+        if (chip.getAttribute('data-virtual') === '1') {
+          // 虚拟期：跳到真实任务并提示
+          toast('这是重复任务的预览期，打开的是本期任务');
+        }
+        openTask(id);
+        return;
+      }
+      const day = e.target.closest('.cal-day');
+      if (day) {
+        state.calSelDay = day.getAttribute('data-day');
+        renderContent();
+        scrollDayPanel();
+      }
+    });
+
+    const addBtn = $('#calAddDay');
+    if (addBtn) addBtn.onclick = () => openNew({ due: state.calSelDay });
+    const demoBtn = $('#calDemo');
+    if (demoBtn) demoBtn.onclick = () => loadDemo();
+
+    // 当日清单：勾选完成 / 打开详情
+    const panel = $('#calDayPanel');
+    if (panel) panel.addEventListener('click', e => {
+      const row = e.target.closest('.cal-task');
+      if (!row) return;
+      const id = row.getAttribute('data-id');
+      const virtual = row.getAttribute('data-virtual') === '1';
+      const btn = e.target.closest('[data-act]');
+      const act = btn ? btn.getAttribute('data-act') : null;
+      if (act === 'toggle') {
+        if (virtual) { toast('预览期不能直接勾选，完成的是本期任务'); return; }
+        toggleDone(id);
+        return;
+      }
+      if (virtual) toast('这是重复任务的预览期，打开的是本期任务');
+      openTask(id);
+    });
+
+    // 拖拽改期
+    grid.addEventListener('dragstart', e => {
+      const chip = e.target.closest('.cal-chip');
+      if (!chip || chip.getAttribute('data-virtual') === '1') return;
+      dragId = chip.getAttribute('data-id');
+      chip.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      try { e.dataTransfer.setData('text/plain', dragId); } catch (err) {}
+    });
+    grid.addEventListener('dragend', e => {
+      const chip = e.target.closest('.cal-chip');
+      if (chip) chip.classList.remove('dragging');
+      $$('.cal-day').forEach(d => d.classList.remove('drag-over'));
+      dragId = null;
+    });
+    grid.addEventListener('dragover', e => {
+      if (!dragId) return;
+      const day = e.target.closest('.cal-day');
+      if (!day) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      $$('.cal-day').forEach(d => d.classList.toggle('drag-over', d === day));
+    });
+    grid.addEventListener('drop', e => {
+      const day = e.target.closest('.cal-day');
+      const id = dragId || (e.dataTransfer && e.dataTransfer.getData('text/plain'));
+      $$('.cal-day').forEach(d => d.classList.remove('drag-over'));
+      dragId = null;
+      if (!day || !id) return;
+      e.preventDefault();
+      const t = getTask(id);
+      const target = day.getAttribute('data-day');
+      if (!t || t.due === target) return;
+      const old = t.due;
+      t.due = target;
+      touch(t);
+      state.calSelDay = target;
+      renderAll();
+      toast('已改期 ' + fmtDue(old) + ' → ' + fmtDue(target), {
+        label: '撤销',
+        onClick: function () { t.due = old; touch(t); renderAll(); }
+      });
+    });
+  }
+
+  function scrollDayPanel() {
+    const p = $('#calDayPanel');
+    if (p) p.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+
   /* ---------------- 渲染：头部 ---------------- */
   function renderHeader() {
     const meta = VIEW_META[state.view] || { title: '任务', sub: '' };
@@ -1324,6 +1593,11 @@
       sub = '搜索「' + state.search.trim() + '」· 命中 ' + list.length + ' 条';
     } else if (state.view === 'stats') {
       sub = meta.sub;
+    } else if (state.view === 'calendar') {
+      const b = calMonthBounds(state.calMonth);
+      const mOpen = aliveOpen().filter(x => x.due && x.due >= b.from && x.due <= b.to).length;
+      const mOver = aliveOpen().filter(x => x.due && x.due < todayStr()).length;
+      sub = state.calMonth.replace('-', ' 年 ') + ' 月 · 本月 ' + mOpen + ' 项待办' + (mOver ? '，已逾期 ' + mOver + ' 项' : '');
     } else if (state.view === 'archive') {
       sub = meta.sub + ' · 共 ' + list.length + ' 条';
     } else {
@@ -1339,10 +1613,11 @@
   function renderAll() {
     if (quietOps) return; // 批量操作期间压住逐条重绘，结束后统一刷一次
     const isStats = state.view === 'stats';
+    const isCal = state.view === 'calendar';
     const liveCount = state.tasks.filter(t => !t.archived).length;
     // 统计面板自己就是统计；归档清单不再按状态筛选；没有数据时也不必摆一堆 0
-    const hideToolbar = isStats || state.view === 'archive' || liveCount === 0;
-    const hideStatsBar = isStats || liveCount === 0;
+    const hideToolbar = isStats || isCal || state.view === 'archive' || liveCount === 0;
+    const hideStatsBar = isStats || isCal || liveCount === 0;
 
     const toolbar = $('.toolbar'), statsBar = $('#stats');
     if (toolbar) toolbar.style.display = hideToolbar ? 'none' : '';
@@ -1372,7 +1647,7 @@
   function openNew(patch) {
     const t = addTask(Object.assign({
       cat: state.view.indexOf('cat:') === 0 ? state.view.slice(4) : 'other',
-      due: state.view === 'today' ? todayStr() : null
+      due: state.view === 'today' ? todayStr() : (state.view === 'calendar' ? state.calSelDay : null)
     }, patch || {}));
     ensureNewVisible(t);
     state.isNew = true;
@@ -1388,8 +1663,7 @@
     }, 60);
   }
 
-  /* 新建的任务如果当前清单根本看不到，就自动切到「今天」，避免"加了却找不到" */
-  /* 新建的任务如果当前清单根本看不到，就自动切到「今天」并清掉搜索，避免"加了却找不到" */
+  /* 新建的任务如果当前视图看不到，就切到能看到的视图，避免"加了却找不到" */
   function ensureNewVisible(t) {
     let switched = false;
 
@@ -1406,6 +1680,19 @@
     }
 
     const v = state.view;
+    if (v === 'calendar') {
+      // 日历：切到任务日期所在月并选中它；没日期的任务去「今天」列表
+      if (!t.due) {
+        state.view = 'today';
+        state.status = 'all';
+        switched = true;
+      } else {
+        state.calMonth = t.due.slice(0, 7);
+        state.calSelDay = t.due;
+      }
+      return switched;
+    }
+
     const hidden = v === 'stats' || v === 'archive' || (v === 'done' && t.status !== 'done');
     if (hidden) {
       state.view = 'today';
@@ -1806,6 +2093,7 @@
     const cat = fromView.indexOf('cat:') === 0 ? fromView.slice(4) : 'other';
     let due = r.due;
     if (!due && fromView === 'today') due = todayStr();
+    if (!due && fromView === 'calendar') due = state.calSelDay;
 
     return addTask({ title: title, cat: cat, due: due, priority: pr.p, tags: tg.tags });
   }
