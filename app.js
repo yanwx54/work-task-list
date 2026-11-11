@@ -1372,10 +1372,10 @@
     const t = item.t;
     const cat = CATS[t.cat];
     const label = (t.dueTime ? t.dueTime + ' ' : '') + (t.title || '未命名任务');
-    return `<div class="cal-chip ${t.status === 'done' ? 'done' : ''} ${item.virtual ? 'virtual' : ''}"
+    return `<div class="cal-event ${t.status === 'done' ? 'done' : ''} ${item.virtual ? 'virtual' : ''}"
       data-id="${t.id}" data-virtual="${item.virtual ? 1 : 0}" draggable="${item.virtual ? 'false' : 'true'}"
       style="--cc:${cat.color}" title="${esc((item.virtual ? '（重复预览）' : '') + cat.name + ' · ' + label)}">
-      <i class="cal-dot"></i>${esc(label)}</div>`;
+      <i class="cal-edot"></i>${esc(label)}</div>`;
   }
 
   function renderCalendarPanel() {
@@ -1384,25 +1384,26 @@
     if (!state.calSelDay || state.calSelDay.slice(0, 7) !== ym) state.calSelDay = t.slice(0, 7) === ym ? t : ym + '-01';
     const byDay = calTasksByDay();
     const monthLabel = ym.replace('-', ' 年 ') + ' 月';
-    const wd = ['一', '二', '三', '四', '五', '六', '日'];
+    const wd = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 
-    const grid = monthMatrix(ym).map(row => `
-      <div class="cal-week">
-        ${row.map(day => {
+    const grid = monthMatrix(ym).map((row, ri) => `
+      <div class="cal-week${ri === 0 ? ' first' : ''}">
+        ${row.map((day, ci) => {
           const items = byDay[day] || [];
           const inMonth = day.slice(0, 7) === ym;
           const cls = ['cal-day'];
           if (!inMonth) cls.push('out');
           if (day === t) cls.push('today');
           if (day === state.calSelDay) cls.push('sel');
-          if (items.length && !items.every(x => x.t.status === 'done')) cls.push('has-open');
+          if (ci >= 5) cls.push('weekend');
           const dayNum = Number(day.slice(8));
-          const chips = items.slice(0, 3).map(calChipHTML).join('');
-          const more = items.length > 3 ? `<div class="cal-more" data-more="${day}">+${items.length - 3} 更多</div>` : '';
+          const shown = items.slice(0, 3);
+          const events = shown.map(calChipHTML).join('');
+          const more = items.length > shown.length
+            ? `<button class="cal-more" data-more="${day}">还有 ${items.length - shown.length} 项</button>` : '';
           return `<div class="${cls.join(' ')}" data-day="${day}">
-            <div class="cal-day-head"><span class="cal-daynum">${dayNum}</span>
-              ${items.length ? `<span class="cal-daycount">${items.filter(x => x.t.status !== 'done').length || ''}</span>` : ''}</div>
-            <div class="cal-chips">${chips}${more}</div>
+            <div class="cal-day-head"><span class="cal-daynum">${dayNum}</span></div>
+            <div class="cal-events">${events}${more}</div>
           </div>`;
         }).join('')}
       </div>`).join('');
@@ -1483,7 +1484,7 @@
     grid.addEventListener('click', e => {
       const more = e.target.closest('[data-more]');
       if (more) { state.calSelDay = more.getAttribute('data-more'); renderContent(); scrollDayPanel(); return; }
-      const chip = e.target.closest('.cal-chip');
+      const chip = e.target.closest('.cal-event');
       if (chip) {
         const id = chip.getAttribute('data-id');
         const dayEl = chip.closest('.cal-day');
@@ -1528,7 +1529,7 @@
 
     // 拖拽改期
     grid.addEventListener('dragstart', e => {
-      const chip = e.target.closest('.cal-chip');
+      const chip = e.target.closest('.cal-event');
       if (!chip || chip.getAttribute('data-virtual') === '1') return;
       dragId = chip.getAttribute('data-id');
       chip.classList.add('dragging');
@@ -1536,7 +1537,7 @@
       try { e.dataTransfer.setData('text/plain', dragId); } catch (err) {}
     });
     grid.addEventListener('dragend', e => {
-      const chip = e.target.closest('.cal-chip');
+      const chip = e.target.closest('.cal-event');
       if (chip) chip.classList.remove('dragging');
       $$('.cal-day').forEach(d => d.classList.remove('drag-over'));
       dragId = null;

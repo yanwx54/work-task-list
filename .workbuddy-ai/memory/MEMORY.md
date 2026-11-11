@@ -57,3 +57,8 @@ Project09 是 Flask + SQLite 的本地台账（重，带报表和工时统计）
 **验证脚本要起本地 http server（file:// 下跨标签页 storage 事件不可靠），
 path.resolve 后再 startsWith 校验目录，Windows 下 path.join 是反斜杠。**
 脚本用完删掉，不留在项目里（.verify/ 已 gitignore）。
+
+## ⚠️ 文件编辑铁律
+**改源码只用 edit 工具。绝不用 PowerShell 的 Get-Content/Set-Content 读写含中文的文件**——
+PowerShell 按 ANSI 码页读写，会整篇损坏 UTF-8（2026-11-11 实测把 app.js 全毁了）。
+万一损坏：`cmd /c "git show HEAD:app.js > app.js"` 原始字节恢复（git checkout/restore 会被安全网拦）。
