@@ -1464,13 +1464,12 @@
           const lunar = lunarCached(day);
           const lLabel = lunar ? (lunar.fest || lunar.label) : '';
           const lCls = lunar && lunar.fest ? ' fest' : '';
-          const shown = items.slice(0, 3);
+          const shown = items.slice(0, 4);
           const events = shown.map(calChipHTML).join('');
           const more = items.length > shown.length
             ? `<button class="cal-more" data-more="${day}">还有 ${items.length - shown.length} 项</button>` : '';
           return `<div class="${cls.join(' ')}" data-day="${day}">
-            <div class="cal-day-head"><span class="cal-daynum">${dayNum}</span></div>
-            <div class="cal-lunar${lCls}" title="${lunar ? esc(lunar.month + lunar.dayName + (lunar.fest ? ' · ' + lunar.fest : '')) : ''}">${esc(lLabel)}</div>
+            <div class="cal-day-head"><span class="cal-daynum">${dayNum}</span><span class="cal-lunar${lCls}" title="${lunar ? esc(lunar.month + lunar.dayName + (lunar.fest ? ' · ' + lunar.fest : '')) : ''}">${esc(lLabel)}</span></div>
             <div class="cal-events">${events}${more}</div>
           </div>`;
         }).join('')}

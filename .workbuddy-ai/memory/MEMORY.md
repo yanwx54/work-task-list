@@ -54,6 +54,8 @@ Project09 是 Flask + SQLite 的本地台账（重，带报表和工时统计）
   日名自己映射 LUNAR_DAY（初一显示月名）；节日 = LUNAR_FEST（农历）+ SOLAR_FEST（公历，公历优先），
   除夕特判（腊月廿九且次日正月初一）。`lunarCache` 每次 renderCalendarPanel 清空重算（42 格约 2ms）。
   Intl 不可用时整体静默降级。移动端只留节日。
+  **位置：日期数字右侧同行**（`.cal-day-head` 内 flex，用户点名要这样给任务省一行）；
+  因此每格任务上限是 **4 条**（`items.slice(0, 4)`），不是 3。
 
 ## 自检方式
 本机有 chromium（`C:/Users/yanwx/AppData/Local/ms-playwright/chromium-1200/chrome-win64/chrome.exe`）

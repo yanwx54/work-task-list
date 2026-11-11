@@ -1334,15 +1334,15 @@ kbd {
 .cal-day.out .cal-daynum, .cal-day.out .cal-event, .cal-day.out .cal-lunar { opacity: .38; }
 .cal-day.out:hover { background: var(--bg); }
 
-.cal-day-head { display: flex; align-items: center; justify-content: flex-start; height: 24px; }
+.cal-day-head { display: flex; align-items: center; gap: 5px; height: 24px; min-width: 0; }
 .cal-lunar {
-  font-size: 10px;
+  font-size: 10.5px;
   line-height: 1.2;
   color: var(--muted);
-  margin: -3px 0 1px 1px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
 }
 .cal-lunar.fest { color: var(--brand-dark); font-weight: 600; }
 .cal-day.today .cal-lunar { color: var(--text-2); }
