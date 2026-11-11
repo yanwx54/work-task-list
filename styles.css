@@ -1315,6 +1315,7 @@ kbd {
 
 .cal-day {
   min-height: 104px;
+  min-width: 0; /* grid 子项默认 min-width:auto，长标题会把列撑爆 */
   padding: 6px 6px 5px;
   background: var(--panel);
   cursor: pointer;
@@ -1324,6 +1325,7 @@ kbd {
   border-left: 1px solid var(--line);
   transition: background .12s;
   position: relative;
+  overflow: hidden;
 }
 .cal-day:first-child { border-left: 0; }
 .cal-day.weekend { background: var(--panel-2); }
@@ -1360,7 +1362,7 @@ kbd {
 .cal-day.drag-over::after { border-style: dashed; }
 
 /* 事件：整行浅色胶囊 + 左侧圆点（Google Calendar 式） */
-.cal-events { display: flex; flex-direction: column; gap: 2px; min-height: 0; }
+.cal-events { display: flex; flex-direction: column; gap: 2px; min-height: 0; min-width: 0; }
 .cal-event {
   font-size: 11px;
   line-height: 1.5;
@@ -1372,16 +1374,17 @@ kbd {
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: grab;
-  display: flex;
-  align-items: center;
-  gap: 4px;
+  display: block; /* flex 子项用 block 截断，避免内部 gap 干扰省略号 */
+  min-width: 0;
 }
 .cal-event .cal-edot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: var(--cc);
-  flex: 0 0 auto;
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 4px;
 }
 .cal-event:hover { background: color-mix(in srgb, var(--cc) 24%, var(--panel)); }
 .cal-event.done { color: var(--muted); text-decoration: line-through; background: var(--track); }
