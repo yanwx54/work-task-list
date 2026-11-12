@@ -90,6 +90,8 @@
     theme: 'auto',
     calMonth: todayStr().slice(0, 7), // 'YYYY-MM'，日历当前月
     calSelDay: todayStr(),             // 日历选中日（下方当日清单）
+    calView: 'month',                  // 日历显示粒度：month 月历 / week 周历
+    weekStart: 1,                      // 一周从周几开始：1=周一（默认） 0=周日
     editingId: null,
     isNew: false,
     lastDeleted: null,
@@ -104,6 +106,7 @@
   };
 
   let dragId = null;
+  let calFlipAt = 0; // 拖拽到日历边缘自动翻页的节流
 
   /* ---------------- 工具 ---------------- */
   const $ = (s, r) => (r || document).querySelector(s);
@@ -490,10 +493,12 @@
         status: ['all', 'todo', 'doing', 'done'].indexOf(p.status) >= 0 ? p.status : 'all',
         sort: ['smart', 'due', 'priority', 'created', 'manual'].indexOf(p.sort) >= 0 ? p.sort : 'smart',
         statsRange: ['week', 'month', 'all'].indexOf(p.statsRange) >= 0 ? p.statsRange : 'month',
-        theme: ['auto', 'light', 'dark'].indexOf(p.theme) >= 0 ? p.theme : 'auto'
+        theme: ['auto', 'light', 'dark'].indexOf(p.theme) >= 0 ? p.theme : 'auto',
+        calView: p.calView === 'week' ? 'week' : 'month',
+        weekStart: p.weekStart === 0 ? 0 : 1
       };
     } catch (e) {
-      return { view: 'calendar', layout: 'list', status: 'all', sort: 'smart', statsRange: 'month', theme: 'auto' };
+      return { view: 'calendar', layout: 'list', status: 'all', sort: 'smart', statsRange: 'month', theme: 'auto', calView: 'month', weekStart: 1 };
     }
   }
 
@@ -501,7 +506,8 @@
     try {
       localStorage.setItem(PREFS_KEY, JSON.stringify({
         view: state.view, layout: state.layout, status: state.status,
-        sort: state.sort, statsRange: state.statsRange, theme: state.theme
+        sort: state.sort, statsRange: state.statsRange, theme: state.theme,
+        calView: state.calView, weekStart: state.weekStart
       }));
     } catch (e) { /* 忽略 */ }
   }
@@ -1509,8 +1515,37 @@
     return { from: ymd(d), to: ymd(new Date(d.getFullYear(), d.getMonth() + 1, 0)) };
   }
 
+  /* 法定节假日：国务院办公厅公布的放假安排（每年官方公布后更新一次这张表）。
+     rest = 放假日期段（含名称），work = 调休补班的周末上班日。
+     数据源：2026 年安排（国办发明电〔2025〕474 号口径，经 timor.tech 节假日接口核对）。 */
+  const HOLIDAYS = {
+    2026: {
+      rest: {
+        '元旦': ['01-01', '01-03'],
+        '春节': ['02-15', '02-23'],
+        '清明节': ['04-04', '04-06'],
+        '劳动节': ['05-01', '05-05'],
+        '端午节': ['06-19', '06-21'],
+        '中秋节': ['09-25', '09-27'],
+        '国庆节': ['10-01', '10-07']
+      },
+      work: ['01-04', '02-14', '02-28', '05-09', '09-20', '10-10']
+    }
+  };
+  function holidayInfo(day) {
+    const h = HOLIDAYS[day.slice(0, 4)];
+    if (!h) return null;
+    const md = day.slice(5);
+    for (const name in h.rest) {
+      const r = h.rest[name];
+      if (md >= r[0] && md <= r[1]) return { type: 'rest', name: name };
+    }
+    if (h.work.indexOf(md) >= 0) return { type: 'work', name: '调休上班' };
+    return null;
+  }
+
   function monthMatrix(ym) {
-    const ws = startOfWeek(ym + '-01'); // 周一为一周起点
+    const ws = calStartOfWeek(ym + '-01');
     const rows = [];
     for (let w = 0; w < 6; w++) {
       const row = [];
@@ -1520,6 +1555,13 @@
       rows.push(row);
     }
     return rows;
+  }
+
+  /* 日历用的一周起点（跟随 state.weekStart：1=周一 0=周日）；打印周计划等固定周一的场景仍用 startOfWeek */
+  function calStartOfWeek(s) {
+    const d = parseYmd(s);
+    const shift = (d.getDay() - (state.weekStart === 0 ? 0 : 1) + 7) % 7;
+    return addDays(s, -shift);
   }
 
   /* 日历里的任务：未归档、有截止日期；重复任务额外铺出未来 3 期 */
@@ -1543,7 +1585,7 @@
       }
     });
     Object.keys(map).forEach(day => {
-      map[day].sort((a, b) => (a.virtual - b.virtual) || (b.t.status === 'done' - a.t.status === 'done') ||
+      map[day].sort((a, b) => (a.virtual - b.virtual) || ((b.t.status === 'done') - (a.t.status === 'done')) ||
         (a.t.dueTime || '99:99').localeCompare(b.t.dueTime || '99:99') || b.t.priority - a.t.priority);
     });
     return map;
@@ -1584,46 +1626,73 @@
   function renderCalendarPanel() {
     const ym = state.calMonth;
     const t = todayStr();
+    const isWeek = state.calView === 'week';
     if (!state.calSelDay || state.calSelDay.slice(0, 7) !== ym) state.calSelDay = t.slice(0, 7) === ym ? t : ym + '-01';
     const byDay = calTasksByDay();
     const dailyByDay = calDailyByDay();
     lunarCache = {}; // 换月/跨天后重算
-    const monthLabel = ym.replace('-', ' 年 ') + ' 月';
-    const wd = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 
-    const grid = monthMatrix(ym).map((row, ri) => `
-      <div class="cal-week${ri === 0 ? ' first' : ''}">
-        ${row.map((day, ci) => {
-          const items = byDay[day] || [];
-          const inMonth = day.slice(0, 7) === ym;
-          const cls = ['cal-day'];
-          if (!inMonth) cls.push('out');
-          if (day === t) cls.push('today');
-          if (day === state.calSelDay) cls.push('sel');
-          if (ci >= 5) cls.push('weekend');
-          const dayNum = Number(day.slice(8));
-          const lunar = lunarCached(day);
-          const lLabel = lunar ? (lunar.fest || lunar.label) : '';
-          const lCls = lunar && lunar.fest ? ' fest' : '';
-          const daily = dailyByDay[day] || [];
-          const taskChips = items.slice(0, 4).map(calChipHTML);
-          const dailyChips = taskChips.length < 4
-            ? daily.slice(0, 4 - taskChips.length).map(calDailyChipHTML) : [];
-          const restN = Math.max(0, items.length - taskChips.length) + Math.max(0, daily.length - dailyChips.length);
-          const more = restN
-            ? `<button class="cal-more" data-more="${day}">还有 ${restN} 项</button>` : '';
-          return `<div class="${cls.join(' ')}" data-day="${day}">
-            <div class="cal-day-head"><span class="cal-daynum">${dayNum}</span><span class="cal-lunar${lCls}" title="${lunar ? esc(lunar.month + lunar.dayName + (lunar.fest ? ' · ' + lunar.fest : '')) : ''}">${esc(lLabel)}</span></div>
-            <div class="cal-events">${taskChips.join('')}${dailyChips.join('')}${more}</div>
-          </div>`;
-        }).join('')}
-      </div>`).join('');
+    /* 标题：月历显示月份，周历显示这周的起止 */
+    let monthLabel;
+    if (isWeek) {
+      const wsdY = calStartOfWeek(state.calSelDay);
+      const ws = parseYmd(wsdY);
+      const we = parseYmd(addDays(wsdY, 6));
+      monthLabel = ws.getFullYear() + ' 年 ' + (ws.getMonth() + 1) + ' 月 ' + ws.getDate() + ' 日 – ' +
+        (we.getMonth() + 1) + ' 月 ' + we.getDate() + ' 日';
+    } else {
+      monthLabel = ym.replace('-', ' 年 ') + ' 月';
+    }
+    const wdNames = state.weekStart === 0
+      ? ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+      : ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+
+    /* 单元格：月历每格最多 4 条，周历全部展开 */
+    const cap = isWeek ? 99 : 4;
+    const cellHTML = function (day) {
+      const items = byDay[day] || [];
+      const inMonth = day.slice(0, 7) === ym;
+      const dow = parseYmd(day).getDay();
+      const hol = holidayInfo(day);
+      const cls = ['cal-day'];
+      if (!isWeek && !inMonth) cls.push('out');
+      if (day === t) cls.push('today');
+      if (day === state.calSelDay) cls.push('sel');
+      if (dow === 0 || dow === 6) cls.push('weekend');
+      if (hol && hol.type === 'work') cls.push('hwork'); // 调休补班日：去掉周末底色
+      const dayNum = Number(day.slice(8));
+      const lunar = lunarCached(day);
+      const lLabel = lunar ? (lunar.fest || lunar.label) : '';
+      const lCls = lunar && lunar.fest ? ' fest' : '';
+      const daily = dailyByDay[day] || [];
+      const taskChips = items.slice(0, cap).map(calChipHTML);
+      const dailyChips = taskChips.length < cap
+        ? daily.slice(0, cap - taskChips.length).map(calDailyChipHTML) : [];
+      const restN = isWeek ? 0
+        : Math.max(0, items.length - taskChips.length) + Math.max(0, daily.length - dailyChips.length);
+      const more = restN ? `<button class="cal-more" data-more="${day}">还有 ${restN} 项</button>` : '';
+      const holBadge = hol
+        ? `<span class="cal-hol ${hol.type}" title="${esc(hol.name)}">${hol.type === 'rest' ? '休' : '班'}</span>` : '';
+      return `<div class="${cls.join(' ')}" data-day="${day}">
+        <div class="cal-day-head"><span class="cal-daynum">${dayNum}</span>${holBadge}<span class="cal-lunar${lCls}" title="${lunar ? esc(lunar.month + lunar.dayName + (lunar.fest ? ' · ' + lunar.fest : '')) : ''}">${esc(lLabel)}</span></div>
+        <div class="cal-events">${taskChips.join('')}${dailyChips.join('')}${more}</div>
+        <button class="cal-add" data-add="${day}" title="在这天新建任务">＋</button>
+      </div>`;
+    };
+
+    const rows = isWeek
+      ? [Array.from({ length: 7 }, function (_, i) { return addDays(calStartOfWeek(state.calSelDay), i); })]
+      : monthMatrix(ym);
+    const grid = rows.map(function (row) {
+      return `<div class="cal-week">${row.map(cellHTML).join('')}</div>`;
+    }).join('');
 
     const selItems = byDay[state.calSelDay] || [];
     const selDaily = dailyByDay[state.calSelDay] || [];
     const selDate = parseYmd(state.calSelDay);
     const selL = lunarCached(state.calSelDay);
     const selLunar = selL ? (selL.month + selL.dayName + (selL.fest ? ' · ' + selL.fest : '')) : '';
+    const selHol = holidayInfo(state.calSelDay);
     const openN = selItems.filter(x => x.t.status !== 'done' && !x.virtual).length +
       selDaily.filter(x => !x.done).length;
     const liveCount = state.tasks.filter(x => !x.archived).length;
@@ -1664,24 +1733,37 @@
       <div class="cal-wrap">
         <div class="cal-head">
           <div class="cal-nav">
-            <button class="icon-btn" data-cal="prev" title="上个月"><svg><use href="#i-chev-l"/></svg></button>
+            <button class="icon-btn" data-cal="prev" title="${isWeek ? '上一周' : '上个月'}"><svg><use href="#i-chev-l"/></svg></button>
             <b class="cal-month">${monthLabel}</b>
-            <button class="icon-btn" data-cal="next" title="下个月"><svg><use href="#i-chev-r"/></svg></button>
+            <button class="icon-btn" data-cal="next" title="${isWeek ? '下一周' : '下个月'}"><svg><use href="#i-chev-r"/></svg></button>
             <button class="btn-ghost" data-cal="today" style="height:26px;font-size:12px;margin-left:6px">回到今天</button>
+            <div class="cal-mode" role="group" aria-label="日历粒度">
+              <button class="cal-mode-btn${!isWeek ? ' on' : ''}" data-calmode="month">月</button>
+              <button class="cal-mode-btn${isWeek ? ' on' : ''}" data-calmode="week">周</button>
+            </div>
+            <button class="btn-ghost" data-cal="weekstart" style="height:26px;font-size:12px"
+              title="一周从周几开始">${state.weekStart === 1 ? '周一起始' : '周日起始'}</button>
+            <button class="btn-ghost" data-cal="printmonth" style="height:26px;font-size:12px" title="打印本月月历（A4 纵向）">打印月历</button>
           </div>
           <div class="cal-legend">
             ${CAT_KEYS.map(k => `<span><i style="background:${CATS[k].color}"></i>${CATS[k].name}</span>`).join('')}
             <span><i class="cal-legend-daily"></i>日常待办</span>
           </div>
         </div>
-        <div class="cal-grid" id="calGrid">
-          <div class="cal-wdrow">${wd.map(x => `<div class="cal-wd">${x}</div>`).join('')}</div>
+        <div class="cal-grid${isWeek ? ' week' : ''}" id="calGrid">
+          <div class="cal-wdrow">${wdNames.map(function (x, i) {
+            const wknd = state.weekStart === 1 ? i >= 5 : (i === 0 || i === 6);
+            return `<div class="cal-wd${wknd ? ' wknd' : ''}">${x}</div>`;
+          }).join('')}</div>
           ${grid}
-          <p class="cal-tip">拖动任务 / 日常待办可改日期；点日期看当天安排；点日常待办的色条可直接勾掉。</p>
+          <p class="cal-tip">${isWeek
+            ? '周历不限条数，任务再多也放得下；拖动色条到别的日子就是改期，拖到左右边缘自动翻周。'
+            : '拖动任务 / 日常待办可改日期（拖到左右边缘自动翻页）；点日期看当天安排；点日常待办的色条可直接勾掉；每月每格最多 4 条，点「还有 N 项」看全天。'}
+            红「休」是法定节假日，灰「班」是调休上班日；<kbd>T</kbd> 回今天，方向键换选中日，<kbd>Enter</kbd> 打开当天第一个任务。</p>
         </div>
         <div class="cal-daypanel" id="calDayPanel">
           <div class="cal-day-head2">
-            <b>${Number(state.calSelDay.slice(8))} 日 · 周${'日一二三四五六'[selDate.getDay()]}${state.calSelDay === t ? '（今天）' : ''}<span class="cal-day-lunar">${esc(selLunar)}</span></b>
+            <b>${Number(state.calSelDay.slice(8))} 日 · 周${'日一二三四五六'[selDate.getDay()]}${state.calSelDay === t ? '（今天）' : ''}${selHol ? `<span class="cal-hol ${selHol.type}" title="${esc(selHol.name)}">${selHol.type === 'rest' ? '休' : '班'}</span>` : ''}<span class="cal-day-lunar">${esc(selLunar)}</span></b>
             <span>${openN ? openN + ' 项待办' : '没有待办'}</span>
           </div>
           <div class="cal-daylist">
@@ -1702,14 +1784,47 @@
     return ymd(d).slice(0, 7);
   }
 
+  /* 键盘左右上下（±7）移动日历选中日，跨月时跟随切换 */
+  function calMoveSel(n) {
+    state.calSelDay = addDays(state.calSelDay, n);
+    if (state.calSelDay.slice(0, 7) !== state.calMonth) state.calMonth = state.calSelDay.slice(0, 7);
+    renderContent();
+    const el = $('.cal-day.sel');
+    if (el) el.scrollIntoView({ block: 'nearest' });
+    scrollDayPanel();
+  }
+
   function bindCalendarPanel() {
     $$('#content [data-cal]').forEach(b => {
       b.onclick = function () {
         const a = b.getAttribute('data-cal');
-        if (a === 'prev') state.calMonth = calShiftMonth(state.calMonth, -1);
-        else if (a === 'next') state.calMonth = calShiftMonth(state.calMonth, 1);
-        else if (a === 'today') { state.calMonth = todayStr().slice(0, 7); state.calSelDay = todayStr(); }
+        const isWeek = state.calView === 'week';
+        if (a === 'prev') {
+          if (isWeek) { state.calSelDay = addDays(state.calSelDay, -7); state.calMonth = state.calSelDay.slice(0, 7); }
+          else state.calMonth = calShiftMonth(state.calMonth, -1);
+        } else if (a === 'next') {
+          if (isWeek) { state.calSelDay = addDays(state.calSelDay, 7); state.calMonth = state.calSelDay.slice(0, 7); }
+          else state.calMonth = calShiftMonth(state.calMonth, 1);
+        } else if (a === 'today') { state.calMonth = todayStr().slice(0, 7); state.calSelDay = todayStr(); }
+        else if (a === 'weekstart') {
+          state.weekStart = state.weekStart === 1 ? 0 : 1;
+          savePrefs();
+          toast('一周从' + (state.weekStart === 1 ? '周一' : '周日') + '开始');
+        } else if (a === 'printmonth') { printMonth(); return; }
         renderContent();
+      };
+    });
+
+    // 月 / 周切换
+    $$('#content [data-calmode]').forEach(b => {
+      b.onclick = function () {
+        const m = b.getAttribute('data-calmode');
+        if (m === state.calView) return;
+        state.calView = m;
+        if (m === 'month') state.calMonth = state.calSelDay.slice(0, 7);
+        savePrefs();
+        renderContent();
+        scrollDayPanel();
       };
     });
 
@@ -1717,6 +1832,8 @@
     if (!grid) return;
 
     grid.addEventListener('click', e => {
+      const addBtn = e.target.closest('[data-add]');
+      if (addBtn) { openNew({ due: addBtn.getAttribute('data-add') }); return; }
       const more = e.target.closest('[data-more]');
       if (more) { state.calSelDay = more.getAttribute('data-more'); renderContent(); scrollDayPanel(); return; }
       const dchip = e.target.closest('.cal-event.cal-daily');
@@ -1825,6 +1942,20 @@
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
       $$('.cal-day').forEach(d => d.classList.toggle('drag-over', d === day));
+
+      // 拖到网格左右边缘：自动翻页（月历翻月、周历翻周），节流 600ms
+      const rect = grid.getBoundingClientRect();
+      const flip = e.clientX < rect.left + 26 ? -1 : e.clientX > rect.right - 26 ? 1 : 0;
+      if (flip && Date.now() - calFlipAt > 600) {
+        calFlipAt = Date.now();
+        if (state.calView === 'week') {
+          state.calSelDay = addDays(state.calSelDay, flip * 7);
+          state.calMonth = state.calSelDay.slice(0, 7);
+        } else {
+          state.calMonth = calShiftMonth(state.calMonth, flip);
+        }
+        renderContent();
+      }
     });
     grid.addEventListener('drop', e => {
       const day = e.target.closest('.cal-day');
@@ -2956,6 +3087,83 @@
     window.print();
   }
 
+  /* ---------------- 打印：A4 月历 ---------------- */
+  function printMonth() {
+    const ym = state.calMonth;
+    const byDay = calTasksByDay();
+    const dailyByDay = calDailyByDay();
+    lunarCache = {};
+    const wdNames = state.weekStart === 0
+      ? ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+      : ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+    const rows = monthMatrix(ym);
+    const alive = state.tasks.filter(x => !x.archived);
+    const openN = alive.filter(x => x.status !== 'done').length;
+    const t = todayStr();
+
+    const cells = [];
+    rows.forEach(row => row.forEach(day => {
+      const inM = day.slice(0, 7) === ym;
+      const hol = holidayInfo(day);
+      const lunar = lunarCached(day);
+      const items = byDay[day] || [];
+      const daily = dailyByDay[day] || [];
+      const all = items.map(it => ({ kind: 'task', it: it })).concat(daily.map(x => ({ kind: 'daily', x: x })));
+      const shown = all.slice(0, 7);
+      const restN = Math.max(0, all.length - shown.length);
+      const lines = shown.map(o => {
+        if (o.kind === 'task') {
+          const t2 = o.it.t;
+          const cat = CATS[t2.cat];
+          return `<div class="ps-item${t2.status === 'done' ? ' ps-done' : ''}">
+            <i class="ps-box" style="border-color:${cat.color}"></i>
+            <span class="ps-time">${t2.dueTime || ''}</span>
+            <span class="ps-title">${esc(t2.title || '未命名任务')}</span>
+          </div>`;
+        }
+        const x = o.x;
+        return `<div class="ps-item${x.done ? ' ps-done' : ''}">
+          <i class="ps-box ps-box-daily"></i>
+          <span class="ps-time">${x.time || ''}</span>
+          <span class="ps-title">${esc(x.text)}</span>
+        </div>`;
+      }).join('') + (restN ? `<div class="ps-more">＋${restN} 项…</div>` : '');
+      cells.push(`<div class="ps-mcell${inM ? '' : ' ps-mout'}${day === t ? ' ps-mtoday' : ''}">
+        <div class="ps-mhead">
+          <b>${Number(day.slice(8))}</b>
+          ${hol ? `<span class="ps-hol ${hol.type}">${hol.type === 'rest' ? '休' : '班'}</span>` : ''}
+          <span class="ps-mlunar">${lunar ? esc(lunar.fest || lunar.label) : ''}</span>
+        </div>
+        <div class="ps-mbody">${lines || (inM ? '<div class="ps-empty">—</div>' : '')}</div>
+      </div>`);
+    }));
+
+    const undated = alive.filter(x => !x.due && x.status !== 'done');
+
+    $('#printSheet').innerHTML = `
+      <div class="ps-page">
+        <div class="ps-head">
+          <div>
+            <h1>月历 · ${ym.replace('-', ' 年 ')} 月</h1>
+            <p>格内为当天任务与日常待办（方框按分类着色，虚线框为日常待办）；「休」为法定节假日，「班」为调休上班日</p>
+          </div>
+          <div class="ps-meta">
+            <span>待办 ${openN} 项</span>
+            <span>打印于 ${fmtDateTime(Date.now())}</span>
+          </div>
+        </div>
+        <div class="ps-mwd">${wdNames.map(n => `<div>${n}</div>`).join('')}</div>
+        <div class="ps-mgrid" style="grid-template-rows:repeat(${rows.length}, minmax(0, ${rows.length >= 6 ? '37mm' : '44mm'}))">${cells.join('')}</div>
+        ${undated.length ? `
+          <div class="ps-undated">
+            <b>未排期（${undated.length} 项）</b>
+            ${undated.map(x => `<span>· ${esc(x.title)}</span>`).join('')}
+          </div>` : ''}
+      </div>`;
+
+    window.print();
+  }
+
   /* ---------------- 提示 ---------------- */
   let toastTimer = null;
   function toast(msg, opt) {
@@ -3359,6 +3567,29 @@
       }
 
       if (typing) return;
+      // 日历页：方向键换选中日，T 回今天，Enter 打开当天第一个任务
+      if (state.view === 'calendar' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        const k = e.key;
+        if (k === 'ArrowLeft' || k === 'ArrowRight' || k === 'ArrowUp' || k === 'ArrowDown' ||
+            k === 'Enter' || k.toLowerCase() === 't') {
+          e.preventDefault();
+          if (k === 'Enter') {
+            const first = (calTasksByDay()[state.calSelDay] || []).filter(x => !x.virtual)[0];
+            if (first) openTask(first.t.id);
+            else openNew({ due: state.calSelDay });
+            return;
+          }
+          if (k.toLowerCase() === 't') {
+            state.calMonth = todayStr().slice(0, 7);
+            state.calSelDay = todayStr();
+            renderContent();
+            scrollDayPanel();
+            return;
+          }
+          calMoveSel(k === 'ArrowLeft' ? -1 : k === 'ArrowRight' ? 1 : k === 'ArrowUp' ? -7 : 7);
+          return;
+        }
+      }
       if (e.key === 'n' || e.key === 'N') { e.preventDefault(); $('#quickAdd').focus(); }
       else if (e.key === '/') { e.preventDefault(); $('#search').focus(); }
       else if (e.key === 'ArrowDown') { e.preventDefault(); navMove(1); }

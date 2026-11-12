@@ -61,6 +61,21 @@ Project09 是 Flask + SQLite 的本地台账（重，带报表和工时统计）
   Intl 不可用时整体静默降级。移动端只留节日。
   **位置：日期数字右侧同行**（`.cal-day-head` 内 flex，用户点名要这样给任务省一行）；
   因此每格任务上限是 **4 条**（`items.slice(0, 4)`），不是 3。
+- **日历（第三轮增强，2026-11-12）**：
+  - **月/周切换**：`state.calView` ('month'|'week') + `state.weekStart` (1|0)，都存 prefs。
+    周视图一行 7 天（起点 `calStartOfWeek(selDay)`），cap=99 不折叠、无 out 格，标题 = 起止日期串
+    （**要从周一起算，别用 selDay 当起点——写错过一次**）。月/周分段按钮 `data-calmode`。
+  - **节假日休班角标**：`HOLIDAYS` 表（app.js ~1521，目前只内置 **2026**，国办口径：
+    元旦/春节/清明/劳动/端午/中秋 rest 区段 + work 补班日数组）+ `holidayInfo(day)`。
+    rest 红标、work 琥珀标 + `hwork` 类（复原周末底色）。以后年份要手动补表。
+  - **月历打印**：`printMonth()` 渲染 `#printSheet`（.ps-mwd/.ps-mgrid/.ps-mcell，每格 7 条上限、
+    含农历与休班标），入口按钮 `data-cal="printmonth"`；行高按行数内联（6 行 37mm / 5 行 44mm）。
+  - **效率件**：格子悬停「＋」`.cal-add`（`data-add`，openNew({due})）；拖到网格左右边缘 26px
+    自动翻页（`calFlipAt` 节流 600ms，周 ±7 天 / 月 calShiftMonth）；
+    键盘：日历视图下 ←→↑↓ 换选中日（`calMoveSel`）、T 回今天、Enter 开当天第一个非虚拟任务
+    （无任务则 openNew）——只在 view==='calendar' 且非输入框时生效；
+    月视图每格 cap=4（任务优先，日常填剩余槽）；周视图偏好刷新后保留（存 prefs）。
+    **注意 openNew 会立即 addTask（「未命名任务」即落库）**，Esc 只是关抽屉不删任务。
 - **日常待办 = 独立数据 + 独立视图 + 出现在日历里**（用户 2026-11-12 定名"日常待办"，
   并要求"这个也要加到日历里"；曾叫"日常记录"已改名。`state.view === 'daily'`，
   渲染入口 `renderDailyPanel()` / `bindDailyPanel()`，见 VIEW_META.daily、viewBase 的空数组、
