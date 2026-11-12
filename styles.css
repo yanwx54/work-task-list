@@ -1468,6 +1468,104 @@ kbd {
   .cal-day-head { height: 20px; }
 }
 
+/* ============ 日常记录（独立于任务，不参与导出） ============ */
+.daily-wrap { max-width: 780px; margin: 0 auto; padding-bottom: 40px; }
+.daily-add {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 12px 14px;
+  box-shadow: var(--shadow-sm);
+  margin-bottom: 18px;
+}
+.daily-add-head {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 10px; font-size: 12.5px; color: var(--muted);
+}
+.daily-add-head label { font-weight: 600; color: var(--text-2); }
+#dailyDate {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  border-radius: var(--r-sm);
+  padding: 3px 6px;
+  font: inherit; font-size: 12.5px;
+}
+#dailyDate:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px var(--focus-ring); }
+.daily-today-hint { margin-left: auto; }
+.daily-input-row { display: flex; gap: 10px; align-items: flex-end; }
+.daily-input-row textarea {
+  flex: 1; min-width: 0; resize: none;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+  font: inherit; font-size: 13.5px; line-height: 20px;
+  max-height: 120px; overflow-y: auto;
+}
+.daily-input-row textarea::placeholder { color: var(--placeholder); }
+.daily-input-row textarea:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px var(--focus-ring); }
+.daily-input-row .btn-primary { height: 36px; flex: none; }
+.daily-tip { margin-top: 7px; font-size: 11.5px; color: var(--muted); }
+.daily-group { margin-bottom: 16px; }
+.daily-ghead {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 0 2px 6px; font-size: 12.5px; color: var(--muted);
+}
+.daily-ghead b { color: var(--text-2); font-size: 13px; }
+.daily-ghead span { font-size: 11.5px; }
+.daily-item {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+}
+.daily-item:hover { background: var(--panel); border-color: var(--line); }
+.daily-time {
+  flex: none; width: 42px; padding-top: 1px;
+  font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums;
+}
+.daily-text {
+  flex: 1; min-width: 0;
+  margin: 0 -4px; padding: 1px 4px;
+  font-size: 13.5px; line-height: 1.55; color: var(--text);
+  white-space: pre-wrap; word-break: break-word;
+  border-radius: 4px; cursor: text;
+}
+.daily-text:hover { background: var(--panel-2); }
+.daily-text.editing {
+  background: var(--panel); cursor: text; outline: none;
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+.daily-del {
+  flex: none; width: 24px; height: 24px;
+  display: flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 6px; background: transparent;
+  color: var(--muted); cursor: pointer; opacity: 0;
+  transition: opacity .12s, background .12s, color .12s;
+}
+.daily-item:hover .daily-del, .daily-del:focus-visible { opacity: 1; }
+.daily-del svg { width: 13px; height: 13px; }
+.daily-del:hover { background: var(--danger-soft); color: var(--danger-text); }
+.daily-empty { text-align: center; color: var(--muted); padding: 40px 20px; }
+.daily-empty-ico {
+  width: 44px; height: 44px; margin: 0 auto 12px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 12px; background: var(--brand-soft); color: var(--brand);
+  line-height: 0;
+}
+.daily-empty-ico svg { width: 21px; height: 21px; }
+.daily-empty b { display: block; margin-bottom: 6px; font-size: 14px; color: var(--text-2); }
+.daily-empty p { margin: 0; font-size: 12.5px; line-height: 1.7; }
+.daily-empty-warn { margin-top: 4px !important; color: var(--muted); font-size: 11.5px !important; }
+@media (max-width: 880px) {
+  .daily-add { padding: 10px; }
+  .daily-input-row { flex-direction: column; align-items: stretch; }
+  .daily-input-row .btn-primary { width: 100%; }
+  .daily-del { opacity: 1; }
+}
+
 /* ============ 打印：A4 周计划 ============ */
 .print-sheet { display: none; }
 

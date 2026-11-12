@@ -7,6 +7,7 @@
 
   /* ---------------- 常量 ---------------- */
   const STORE_KEY = 'work-tasks.v1';
+  const DAILY_KEY = 'work-tasks.daily.v1'; // 日常记录单独存：不参与 JSON / CSV 导出
   const APP_VER = 1;
 
   const CATS = {
@@ -63,6 +64,7 @@
 
   const VIEW_META = {
     calendar: { title: '日历',     sub: '按月查看与安排任务' },
+    daily:   { title: '日常记录', sub: '每天做了什么，随手记一条（只存本机，不参与导出）' },
     today:   { title: '今天',       sub: '所有未完成的任务都在这里' },
     week:    { title: '未来 7 天',  sub: '提前看到接下来一周的安排' },
     overdue: { title: '已逾期',     sub: '需要尽快处理或调整计划' },
@@ -92,6 +94,9 @@
     isNew: false,
     lastDeleted: null,
     purged: {},          // 墓碑：彻底删除的 id -> 删除时间（防别的标签页/备份复活它）
+    daily: [],           // 日常记录：{id,date,time,text,createdAt,updatedAt}，不参与导出
+    dailyPurged: {},     // 日常记录的删除墓碑
+    dailyDate: todayStr(), // 日常记录默认写入的日期
     sel: new Set(),      // 批量选择：任务 id
     selAnchor: null,     // Shift 连选的锚点
     navId: null          // 键盘导航当前聚焦的行
@@ -193,7 +198,7 @@
       const today = todayStr();
       const list = loadBackups();
       if (list.length && list[0].date === today) { backupDone = true; return; }
-      list.unshift({ at: Date.now(), date: today, count: state.tasks.length, tasks: state.tasks });
+      list.unshift({ at: Date.now(), date: today, count: state.tasks.length, tasks: state.tasks, daily: state.daily });
       localStorage.setItem(BACKUP_KEY, JSON.stringify(list.slice(0, BACKUP_MAX)));
       backupDone = true;
     } catch (e) {
@@ -211,9 +216,26 @@
       const n = normalizeTask(raw);
       if (n && !have.has(n.id)) { state.tasks.push(n); added++; }
     });
+
+    // 日常记录一起从快照补回（只增不覆盖，避免恢复备份时抹掉新记的内容）
+    let addedD = 0;
+    if (Array.isArray(b.daily)) {
+      const haveD = new Set(state.daily.map(x => x.id));
+      b.daily.forEach(raw => {
+        const n = normalizeDaily(raw);
+        if (n && !haveD.has(n.id)) { state.daily.push(n); addedD++; }
+      });
+      if (addedD) saveDaily();
+    }
+
     save();
     renderAll();
-    toast(added ? '已从 ' + b.date + ' 的快照恢复 ' + added + ' 条任务' : '快照里的任务都还在，无需恢复');
+    const parts = [];
+    if (added) parts.push(added + ' 条任务');
+    if (addedD) parts.push(addedD + ' 条日常记录');
+    toast(parts.length
+      ? '已从 ' + b.date + ' 的快照恢复 ' + parts.join('、')
+      : '快照里的内容都还在，无需恢复');
   }
 
   function renderBackupInfo() {
@@ -361,7 +383,57 @@
     return mergeRemote(state.tasks, state.purged, remote.tasks, remote.purged);
   }
 
+  /* ---------------- 日常记录存储（独立 key，导出时不会带上） ---------------- */
+  function normalizeDaily(x) {
+    if (!x || !x.id) return null;
+    return {
+      id: String(x.id),
+      date: /^\d{4}-\d{2}-\d{2}$/.test(x.date || '') ? x.date : todayStr(),
+      time: /^\d{1,2}:\d{2}$/.test(x.time || '') ? x.time : '',
+      text: String(x.text || ''),
+      createdAt: x.createdAt || Date.now(),
+      updatedAt: x.updatedAt || x.createdAt || Date.now()
+    };
+  }
+
+  function parseDaily(raw) {
+    try {
+      const d = raw ? JSON.parse(raw) : null;
+      const items = ((d && Array.isArray(d.items)) ? d.items : []).map(normalizeDaily).filter(Boolean);
+      const purged = (d && d.purged && typeof d.purged === 'object') ? d.purged : {};
+      return { items: items, purged: purged };
+    } catch (e) {
+      return { items: [], purged: {} };
+    }
+  }
+
+  function loadDaily() {
+    return parseDaily(localStorage.getItem(DAILY_KEY));
+  }
+
+  // 日常记录都是离散操作（记一条 / 改一条 / 删一条），直接落盘，避免关标签页瞬间丢记录
+  function saveDaily() {
+    // 和任务一样：先合并别的标签页写入的记录，再整包写回
+    const remote = parseDaily(localStorage.getItem(DAILY_KEY));
+    mergeRemote(state.daily, state.dailyPurged, remote.items, remote.purged);
+    try {
+      localStorage.setItem(DAILY_KEY, JSON.stringify({
+        version: APP_VER, items: state.daily, purged: state.dailyPurged
+      }));
+    } catch (e) {
+      toast('保存失败：浏览器存储空间可能已满');
+    }
+  }
+
   window.addEventListener('storage', function (e) {
+    if (e.key === DAILY_KEY && e.newValue != null) {
+      const remote = parseDaily(e.newValue);
+      if (!mergeRemote(state.daily, state.dailyPurged, remote.items, remote.purged)) return;
+      renderCounts();
+      if (state.view === 'daily') renderAll();
+      toast('已同步另一个标签页的日常记录');
+      return;
+    }
     if (e.key !== STORE_KEY || e.newValue == null) return;
     const remote = parseStore(e.newValue);
     if (!mergeRemote(state.tasks, state.purged, remote.tasks, remote.purged)) return;
@@ -659,6 +731,7 @@
       case 'done':    return alive.filter(x => x.status === 'done');
       case 'archive': return state.tasks.filter(x => x.archived);
       case 'stats':   return [];
+      case 'daily':   return [];
       default:
         if (view.indexOf('cat:') === 0) {
           const c = view.slice(4);
@@ -785,7 +858,8 @@
       overdue: open.filter(x => x.due && x.due < t).length,
       inbox: open.length,
       done: alive.filter(x => x.status === 'done').length,
-      archive: state.tasks.filter(x => x.archived).length
+      archive: state.tasks.filter(x => x.archived).length,
+      daily: state.daily.filter(x => x.date === t).length
     };
     CAT_KEYS.forEach(k => { c['cat:' + k] = open.filter(x => x.cat === k).length; });
     return c;
@@ -970,6 +1044,13 @@
     if (state.view === 'calendar') {
       el.innerHTML = renderCalendarPanel();
       bindCalendarPanel();
+      return;
+    }
+
+    // 日常记录：独立面板，不跟任务列表混在一起
+    if (state.view === 'daily') {
+      el.innerHTML = renderDailyPanel();
+      bindDailyPanel();
       return;
     }
 
@@ -1646,6 +1727,201 @@
     if (p) p.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }
 
+  /* ---------------- 日常记录（独立于任务，不参与导出） ---------------- */
+  function dailyItems(q) {
+    q = String(q || '').trim().toLowerCase();
+    const list = q ? state.daily.filter(x => x.text.toLowerCase().indexOf(q) >= 0) : state.daily.slice();
+    // 日期倒序；同一天内按记录时间正序，读起来像当天的工作流水
+    return list.sort((a, b) => {
+      if (a.date !== b.date) return a.date < b.date ? 1 : -1;
+      return (a.time || '').localeCompare(b.time || '') || (a.createdAt - b.createdAt);
+    });
+  }
+
+  function dailyDateLabel(dateStr) {
+    const t = todayStr();
+    const d = parseYmd(dateStr);
+    const md = (d.getMonth() + 1) + ' 月 ' + d.getDate() + ' 日';
+    const wk = '周' + weekdayCN(dateStr);
+    if (dateStr === t) return '今天 · ' + md + ' ' + wk;
+    if (dateStr === addDays(t, -1)) return '昨天 · ' + md + ' ' + wk;
+    if (d.getFullYear() !== new Date().getFullYear()) return d.getFullYear() + ' 年 ' + md + ' ' + wk;
+    return md + ' ' + wk;
+  }
+
+  function renderDailyPanel() {
+    const list = dailyItems(state.search);
+    const groups = [];
+    list.forEach(x => {
+      const last = groups[groups.length - 1];
+      if (!last || last.date !== x.date) groups.push({ date: x.date, items: [x] });
+      else last.items.push(x);
+    });
+    const todayN = state.daily.filter(x => x.date === todayStr()).length;
+    const q = state.search.trim();
+
+    let body;
+    if (!list.length) {
+      body = q
+        ? `<div class="daily-empty"><b>没有匹配的记录</b><p>换个关键词，或者清空搜索框。</p></div>`
+        : `<div class="daily-empty">
+             <div class="daily-empty-ico"><svg><use href="#i-note"/></svg></div>
+             <b>还没有日常记录</b>
+             <p>每天做完事，随手记一条：推进了什么、卡在哪、明天先做什么。</p>
+             <p class="daily-empty-warn">只保存在本机，不会进入 JSON / CSV 导出</p>
+           </div>`;
+    } else {
+      body = groups.map(g => `
+        <section class="daily-group">
+          <div class="daily-ghead">
+            <b>${esc(dailyDateLabel(g.date))}</b>
+            <span>${g.items.length} 条</span>
+          </div>
+          ${g.items.map(x => `
+            <div class="daily-item" data-id="${esc(x.id)}">
+              <span class="daily-time">${esc(x.time || '—')}</span>
+              <div class="daily-text" data-role="text" title="点击可编辑">${esc(x.text)}</div>
+              <button class="daily-del" data-role="del" title="删除这条记录"><svg><use href="#i-close"/></svg></button>
+            </div>`).join('')}
+        </section>`).join('');
+    }
+
+    return `<div class="daily-wrap">
+      <div class="daily-add">
+        <div class="daily-add-head">
+          <label for="dailyDate">记录到</label>
+          <input type="date" id="dailyDate" value="${esc(state.dailyDate)}">
+          <span class="daily-today-hint">${todayN ? '今天已记 ' + todayN + ' 条' : '今天还没有记录'}</span>
+        </div>
+        <div class="daily-input-row">
+          <textarea id="dailyText" rows="1" placeholder="记录今天做了什么…"></textarea>
+          <button class="btn-primary" id="dailyAdd">记一条</button>
+        </div>
+        <div class="daily-tip">Enter 保存 · Shift+Enter 换行 · 点正文可以就地修改</div>
+      </div>
+      ${body}
+    </div>`;
+  }
+
+  function bindDailyPanel() {
+    const wrap = $('.daily-wrap');
+    if (!wrap) return;
+
+    const ta = $('#dailyText');
+    const dateEl = $('#dailyDate');
+
+    function addItem() {
+      const text = ta.value.replace(/\r/g, '').replace(/^\s+|\s+$/g, '');
+      if (!text) { toast('先写点什么再记录'); ta.focus(); return; }
+      const date = (dateEl && dateEl.value) || todayStr();
+      state.dailyDate = date;
+      const now = new Date();
+      const p = n => String(n).padStart(2, '0');
+      state.daily.push({
+        id: uid(),
+        date: date,
+        time: p(now.getHours()) + ':' + p(now.getMinutes()),
+        text: text,
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      });
+      saveDaily();
+      renderAll();
+      const nt = $('#dailyText');
+      if (nt) nt.focus();
+      const n = state.daily.filter(x => x.date === date).length;
+      toast(date === todayStr()
+        ? '已记录 · 今天第 ' + n + ' 条'
+        : '已记录到 ' + dailyDateLabel(date).replace(/ · .*$/, '') + ' · 该日 ' + n + ' 条');
+    }
+
+    if (dateEl) dateEl.addEventListener('change', function () { state.dailyDate = this.value || todayStr(); });
+    if (ta) {
+      ta.addEventListener('keydown', function (e) {
+        if (e.isComposing) return; // 中文输入法组词时的回车不提交
+        if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); addItem(); }
+      });
+      ta.addEventListener('input', function () {
+        this.style.height = 'auto';
+        this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+      });
+    }
+    const addBtn = $('#dailyAdd');
+    if (addBtn) addBtn.addEventListener('click', addItem);
+
+    wrap.addEventListener('click', function (e) {
+      const del = e.target.closest('[data-role="del"]');
+      if (del) {
+        const row = del.closest('.daily-item');
+        if (row) deleteDaily(row.getAttribute('data-id'));
+        return;
+      }
+      const txt = e.target.closest('[data-role="text"]');
+      if (txt && txt.getAttribute('contenteditable') !== 'true') {
+        const row = txt.closest('.daily-item');
+        const item = row && state.daily.find(x => x.id === row.getAttribute('data-id'));
+        if (item) editDailyText(txt, item);
+      }
+    });
+  }
+
+  /* 点正文就地编辑：Enter 保存，Shift+Enter 换行，Esc 放弃 */
+  function editDailyText(el, item) {
+    const orig = item.text;
+    el.setAttribute('contenteditable', 'true');
+    el.classList.add('editing');
+    el.focus();
+    const sel = window.getSelection();
+    if (sel) {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      range.collapse(false);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+    let done = false;
+    function finish(save) {
+      if (done) return;
+      done = true;
+      el.setAttribute('contenteditable', 'false');
+      el.classList.remove('editing');
+      const text = (el.innerText || el.textContent || '').replace(/\r/g, '').trim();
+      if (!save || !text || text === orig) { el.textContent = orig; return; }
+      item.text = text;
+      item.updatedAt = Date.now();
+      saveDaily();
+      toast('已更新这条记录');
+    }
+    el.addEventListener('blur', function () { finish(true); }, { once: true });
+    el.addEventListener('keydown', function (e) {
+      if (e.isComposing) return;
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); el.blur(); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); el.blur(); }
+    });
+  }
+
+  function deleteDaily(id) {
+    const idx = state.daily.findIndex(x => x.id === id);
+    if (idx < 0) return;
+    const item = state.daily.splice(idx, 1)[0];
+    state.dailyPurged[id] = Date.now(); // 墓碑：别的标签页不会把它复活
+    saveDaily();
+    renderAll();
+    toast('已删除一条记录', {
+      label: '撤销',
+      onClick: function () {
+        // 撤销要压过墓碑：否则合并时会被当成「已删除」再删一次
+        const ts = Number(state.dailyPurged[id] || 0);
+        delete state.dailyPurged[id];
+        item.updatedAt = Math.max(Date.now(), ts + 1);
+        state.daily.push(item);
+        saveDaily();
+        renderAll();
+        toast('已恢复');
+      }
+    });
+  }
+
   /* ---------------- 渲染：头部 ---------------- */
   function renderHeader() {
     const meta = VIEW_META[state.view] || { title: '任务', sub: '' };
@@ -1659,7 +1935,12 @@
     if (state.view === 'today') {
       sub = (new Date().getMonth() + 1) + ' 月 ' + new Date().getDate() + ' 日 · 周' + weekdayCN(todayStr());
     }
-    if (state.search.trim()) {
+    if (state.view === 'daily') {
+      const q = state.search.trim();
+      const todayN = state.daily.filter(x => x.date === todayStr()).length;
+      sub = '共 ' + state.daily.length + ' 条记录 · 今天 ' + todayN + ' 条' +
+        (q ? ' · 搜索「' + q + '」命中 ' + dailyItems(q).length + ' 条' : '');
+    } else if (state.search.trim()) {
       sub = '搜索「' + state.search.trim() + '」· 命中 ' + list.length + ' 条';
     } else if (state.view === 'stats') {
       sub = meta.sub;
@@ -1684,10 +1965,11 @@
     if (quietOps) return; // 批量操作期间压住逐条重绘，结束后统一刷一次
     const isStats = state.view === 'stats';
     const isCal = state.view === 'calendar';
+    const isDaily = state.view === 'daily';
     const liveCount = state.tasks.filter(t => !t.archived).length;
     // 统计面板自己就是统计；归档清单不再按状态筛选；没有数据时也不必摆一堆 0
-    const hideToolbar = isStats || isCal || state.view === 'archive' || liveCount === 0;
-    const hideStatsBar = isStats || isCal || liveCount === 0;
+    const hideToolbar = isStats || isCal || isDaily || state.view === 'archive' || liveCount === 0;
+    const hideStatsBar = isStats || isCal || isDaily || liveCount === 0;
 
     const toolbar = $('.toolbar'), statsBar = $('#stats');
     if (toolbar) toolbar.style.display = hideToolbar ? 'none' : '';
@@ -1763,7 +2045,7 @@
       return switched;
     }
 
-    const hidden = v === 'stats' || v === 'archive' || (v === 'done' && t.status !== 'done');
+    const hidden = v === 'stats' || v === 'archive' || v === 'daily' || (v === 'done' && t.status !== 'done');
     if (hidden) {
       state.view = 'today';
       state.status = 'all';
@@ -2621,6 +2903,8 @@
       $('#content').scrollTop = 0;
       $('#sidebar').classList.remove('show');
       $('#sidebarMask').classList.remove('show');
+      // 进日常记录就把光标放进输入框，省一次点击（放在这里而不是渲染里，避免抢搜索框焦点）
+      if (state.view === 'daily') { const dt = $('#dailyText'); if (dt) dt.focus(); }
     });
 
     // 快速添加（textarea：Enter 提交，Shift+Enter / 粘贴多行 = 批量添加）
@@ -2939,6 +3223,11 @@
     const store = load();
     state.tasks = store.tasks;
     state.purged = store.purged;
+
+    const daily = loadDaily();
+    state.daily = daily.items;
+    state.dailyPurged = daily.purged;
+
     Object.assign(state, loadPrefs());
     state.sel.clear();
     remind = loadRemind();

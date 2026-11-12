@@ -26,6 +26,10 @@ Project09 是 Flask + SQLite 的本地台账（重，带报表和工时统计）
 - 界面偏好（视图/布局/筛选/排序/统计范围/主题）：`work-tasks.prefs.v1`
 - 每日提醒状态（enabled / last 已提醒日期）：`work-tasks.remind.v1`
 - 每日自动快照（保留 3 份）：`work-tasks.backup.v1`
+- **日常记录（独立存储）**：`work-tasks.daily.v1`（结构：`{ version, items, purged }`，
+  item = `{ id, date:'YYYY-MM-DD', time:'HH:MM', text, createdAt, updatedAt }`）。
+  用户要求：**日常记录不进 JSON / CSV 导出**，所以它绝不能混进 `work-tasks.v1` 或导出函数；
+  只跟着每日快照一起备份（`saveBackup` 的 `daily` 字段），恢复时只增不覆盖。
 
 ## 核心设计决定（改动前先看）
 - **默认首页 = 日历**（用户 2026-11-11 明确要求：首页月视图放任务，下一页才是列表）。
@@ -56,6 +60,14 @@ Project09 是 Flask + SQLite 的本地台账（重，带报表和工时统计）
   Intl 不可用时整体静默降级。移动端只留节日。
   **位置：日期数字右侧同行**（`.cal-day-head` 内 flex，用户点名要这样给任务省一行）；
   因此每格任务上限是 **4 条**（`items.slice(0, 4)`），不是 3。
+- **日常记录 = 独立数据 + 独立视图**（`state.view === 'daily'`，渲染入口 `renderDailyPanel()` /
+  `bindDailyPanel()`，见 VIEW_META.daily、viewBase 的空数组、renderContent 的 daily 分支）。
+  存储函数 `loadDaily / saveDaily / parseDaily / normalizeDaily`，**saveDaily 不 debounce**：
+  都是离散操作，立即落盘，避免 120ms 内关标签页丢记录（多标签页靠 `mergeRemote` 合并）。
+  删除写墓碑 `state.dailyPurged[id]`；**撤销必须把 `updatedAt` 提到墓碑时间之后**
+  （`Math.max(Date.now(), tombstone + 1)`），否则合并时又被墓碑删掉——踩过一次。
+  正文就地编辑用 contenteditable（Enter 保存 / Shift+Enter 换行 / Esc 放弃）。
+  不要在 `bindDailyPanel` 里 autofocus：会抢搜索框焦点（已在导航点击处单独 focus）。
 
 ## 自检方式
 本机有 chromium（`C:/Users/yanwx/AppData/Local/ms-playwright/chromium-1200/chrome-win64/chrome.exe`）
