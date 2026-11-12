@@ -7,7 +7,7 @@
 
   /* ---------------- 常量 ---------------- */
   const STORE_KEY = 'work-tasks.v1';
-  const DAILY_KEY = 'work-tasks.daily.v1'; // 日常记录单独存：不参与 JSON / CSV 导出
+  const DAILY_KEY = 'work-tasks.daily.v1'; // 日常待办单独存：不参与 JSON / CSV 导出，但会显示在日历里
   const APP_VER = 1;
 
   const CATS = {
@@ -64,7 +64,7 @@
 
   const VIEW_META = {
     calendar: { title: '日历',     sub: '按月查看与安排任务' },
-    daily:   { title: '日常记录', sub: '每天做了什么，随手记一条（只存本机，不参与导出）' },
+    daily:    { title: '日常待办', sub: '每天固定要做的零碎事，和任务分开记（只存本机，不参与导出）' },
     today:   { title: '今天',       sub: '所有未完成的任务都在这里' },
     week:    { title: '未来 7 天',  sub: '提前看到接下来一周的安排' },
     overdue: { title: '已逾期',     sub: '需要尽快处理或调整计划' },
@@ -94,9 +94,10 @@
     isNew: false,
     lastDeleted: null,
     purged: {},          // 墓碑：彻底删除的 id -> 删除时间（防别的标签页/备份复活它）
-    daily: [],           // 日常记录：{id,date,time,text,createdAt,updatedAt}，不参与导出
-    dailyPurged: {},     // 日常记录的删除墓碑
-    dailyDate: todayStr(), // 日常记录默认写入的日期
+    daily: [],           // 日常待办：{id,date,time,text,done,doneAt,createdAt,updatedAt}，不参与导出
+    dailyPurged: {},     // 日常待办的删除墓碑
+    dailyDate: todayStr(), // 日常待办默认写入的日期
+    dailyDraft: '',        // 日常待办输入框草稿（重绘时不丢）
     sel: new Set(),      // 批量选择：任务 id
     selAnchor: null,     // Shift 连选的锚点
     navId: null          // 键盘导航当前聚焦的行
@@ -232,7 +233,7 @@
     renderAll();
     const parts = [];
     if (added) parts.push(added + ' 条任务');
-    if (addedD) parts.push(addedD + ' 条日常记录');
+    if (addedD) parts.push(addedD + ' 条日常待办');
     toast(parts.length
       ? '已从 ' + b.date + ' 的快照恢复 ' + parts.join('、')
       : '快照里的内容都还在，无需恢复');
@@ -383,7 +384,7 @@
     return mergeRemote(state.tasks, state.purged, remote.tasks, remote.purged);
   }
 
-  /* ---------------- 日常记录存储（独立 key，导出时不会带上） ---------------- */
+  /* ---------------- 日常待办存储（独立 key，导出时不会带上） ---------------- */
   function normalizeDaily(x) {
     if (!x || !x.id) return null;
     return {
@@ -391,9 +392,44 @@
       date: /^\d{4}-\d{2}-\d{2}$/.test(x.date || '') ? x.date : todayStr(),
       time: /^\d{1,2}:\d{2}$/.test(x.time || '') ? x.time : '',
       text: String(x.text || ''),
+      done: !!x.done,
+      doneAt: x.done ? (x.doneAt || x.updatedAt || 0) : null,
       createdAt: x.createdAt || Date.now(),
       updatedAt: x.updatedAt || x.createdAt || Date.now()
     };
+  }
+
+  /* 新建一条日常待办：视图和日历面板共用 */
+  function pushDaily(date, text) {
+    text = String(text || '').replace(/\r/g, '').trim();
+    if (!text) return null;
+    const now = new Date();
+    const p = n => String(n).padStart(2, '0');
+    const item = {
+      id: uid(),
+      date: /^\d{4}-\d{2}-\d{2}$/.test(date || '') ? date : todayStr(),
+      time: p(now.getHours()) + ':' + p(now.getMinutes()),
+      text: text,
+      done: false,
+      doneAt: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+    state.daily.push(item);
+    saveDaily();
+    return item;
+  }
+
+  /* 勾掉 / 取消勾掉一条日常待办 */
+  function toggleDailyDone(id) {
+    const it = state.daily.find(x => x.id === id);
+    if (!it) return;
+    it.done = !it.done;
+    it.doneAt = it.done ? Date.now() : null;
+    it.updatedAt = Date.now();
+    saveDaily();
+    renderAll();
+    if (it.done) toast('已完成一条日常待办');
   }
 
   function parseDaily(raw) {
@@ -430,8 +466,8 @@
       const remote = parseDaily(e.newValue);
       if (!mergeRemote(state.daily, state.dailyPurged, remote.items, remote.purged)) return;
       renderCounts();
-      if (state.view === 'daily') renderAll();
-      toast('已同步另一个标签页的日常记录');
+      if (state.view === 'daily' || state.view === 'calendar') renderAll();
+      toast('已同步另一个标签页的日常待办');
       return;
     }
     if (e.key !== STORE_KEY || e.newValue == null) return;
@@ -852,14 +888,15 @@
 
     const mb = calMonthBounds(todayStr().slice(0, 7));
     const c = {
-      calendar: open.filter(x => x.due && x.due >= mb.from && x.due <= mb.to).length,
+      calendar: open.filter(x => x.due && x.due >= mb.from && x.due <= mb.to).length +
+        state.daily.filter(x => !x.done && x.date >= mb.from && x.date <= mb.to).length,
       today: open.length + doneToday,
       week: open.filter(x => x.due && x.due >= t && x.due <= end).length,
       overdue: open.filter(x => x.due && x.due < t).length,
       inbox: open.length,
       done: alive.filter(x => x.status === 'done').length,
       archive: state.tasks.filter(x => x.archived).length,
-      daily: state.daily.filter(x => x.date === t).length
+      daily: state.daily.filter(x => x.date === t && !x.done).length
     };
     CAT_KEYS.forEach(k => { c['cat:' + k] = open.filter(x => x.cat === k).length; });
     return c;
@@ -1522,11 +1559,34 @@
       <i class="cal-edot"></i>${esc(label)}</div>`;
   }
 
+  /* 日历里的日常待办：按日期分组，未完成在前 */
+  function calDailyByDay() {
+    const map = {};
+    state.daily.forEach(x => {
+      if (!x.date) return;
+      (map[x.date] = map[x.date] || []).push(x);
+    });
+    Object.keys(map).forEach(day => {
+      map[day].sort((a, b) => {
+        if (!!a.done !== !!b.done) return a.done ? 1 : -1;
+        return (a.time || '99:99').localeCompare(b.time || '99:99');
+      });
+    });
+    return map;
+  }
+
+  function calDailyChipHTML(x) {
+    const label = (x.time ? x.time + ' ' : '') + (x.text || '日常待办');
+    return `<div class="cal-event cal-daily${x.done ? ' done' : ''}" data-daily-id="${esc(x.id)}" draggable="true"
+      title="${esc('日常待办 · ' + label)}"><i class="cal-edot"></i>${esc(label)}</div>`;
+  }
+
   function renderCalendarPanel() {
     const ym = state.calMonth;
     const t = todayStr();
     if (!state.calSelDay || state.calSelDay.slice(0, 7) !== ym) state.calSelDay = t.slice(0, 7) === ym ? t : ym + '-01';
     const byDay = calTasksByDay();
+    const dailyByDay = calDailyByDay();
     lunarCache = {}; // 换月/跨天后重算
     const monthLabel = ym.replace('-', ' 年 ') + ' 月';
     const wd = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
@@ -1545,24 +1605,29 @@
           const lunar = lunarCached(day);
           const lLabel = lunar ? (lunar.fest || lunar.label) : '';
           const lCls = lunar && lunar.fest ? ' fest' : '';
-          const shown = items.slice(0, 4);
-          const events = shown.map(calChipHTML).join('');
-          const more = items.length > shown.length
-            ? `<button class="cal-more" data-more="${day}">还有 ${items.length - shown.length} 项</button>` : '';
+          const daily = dailyByDay[day] || [];
+          const taskChips = items.slice(0, 4).map(calChipHTML);
+          const dailyChips = taskChips.length < 4
+            ? daily.slice(0, 4 - taskChips.length).map(calDailyChipHTML) : [];
+          const restN = Math.max(0, items.length - taskChips.length) + Math.max(0, daily.length - dailyChips.length);
+          const more = restN
+            ? `<button class="cal-more" data-more="${day}">还有 ${restN} 项</button>` : '';
           return `<div class="${cls.join(' ')}" data-day="${day}">
             <div class="cal-day-head"><span class="cal-daynum">${dayNum}</span><span class="cal-lunar${lCls}" title="${lunar ? esc(lunar.month + lunar.dayName + (lunar.fest ? ' · ' + lunar.fest : '')) : ''}">${esc(lLabel)}</span></div>
-            <div class="cal-events">${events}${more}</div>
+            <div class="cal-events">${taskChips.join('')}${dailyChips.join('')}${more}</div>
           </div>`;
         }).join('')}
       </div>`).join('');
 
     const selItems = byDay[state.calSelDay] || [];
+    const selDaily = dailyByDay[state.calSelDay] || [];
     const selDate = parseYmd(state.calSelDay);
     const selL = lunarCached(state.calSelDay);
     const selLunar = selL ? (selL.month + selL.dayName + (selL.fest ? ' · ' + selL.fest : '')) : '';
-    const openN = selItems.filter(x => x.t.status !== 'done' && !x.virtual).length;
+    const openN = selItems.filter(x => x.t.status !== 'done' && !x.virtual).length +
+      selDaily.filter(x => !x.done).length;
     const liveCount = state.tasks.filter(x => !x.archived).length;
-    const dayList = selItems.length ? selItems.map(item => {
+    const dayTasksHtml = selItems.length ? selItems.map(item => {
       const t2 = item.t;
       const cat = CATS[t2.cat];
       const prio = PRIOS[t2.priority] || PRIOS[0];
@@ -1579,9 +1644,21 @@
             ${overdue ? '<span class="t-badge" style="--bc:#d9463c">已逾期</span>' : ''}
           </div>
         </div>`;
-    }).join('') : `<div class="cal-day-empty">${liveCount ? '这一天还没有安排。' : '还没有任务，先添加一条，或者载入几条示例看看各类工作怎么归类。'}
+    }).join('') : `<div class="cal-day-empty"${selDaily.length ? ' style="padding:8px 2px"' : ''}>${liveCount ? '这一天没有任务。' : '还没有任务，先添加一条，或者载入几条示例看看各类工作怎么归类。'}
       <button class="btn-ghost" id="calAddDay" style="height:26px;font-size:12px;margin-left:8px">＋ 添加任务</button>
       ${liveCount ? '' : '<button class="btn-ghost" id="calDemo" style="height:26px;font-size:12px;margin-left:6px">载入示例数据</button>'}</div>`;
+
+    const dayDailyHtml = selDaily.length ? selDaily.map(x => `
+        <div class="cal-task cal-daily-row${x.done ? ' done' : ''}" data-daily-id="${esc(x.id)}">
+          <button class="t-check" data-act="dtoggle" title="${x.done ? '标记未完成' : '标记完成'}"><svg><use href="#i-check"/></svg></button>
+          <div class="t-main" data-act="dtext">
+            <span class="t-title">${esc(x.text)}</span>
+            ${x.time ? `<span class="t-due"><svg><use href="#i-clock"/></svg>${esc(x.time)}</span>` : ''}
+            <span class="t-badge" style="--bc:var(--muted);--bc-bg:var(--track)">日常</span>
+          </div>
+          <button class="t-act-btn" data-act="ddel" title="删除这条日常待办"><svg><use href="#i-close"/></svg></button>
+        </div>`).join('')
+      : '<div class="cal-day-empty" style="padding:8px 2px">这一天没有日常待办。</div>';
 
     return `
       <div class="cal-wrap">
@@ -1594,19 +1671,27 @@
           </div>
           <div class="cal-legend">
             ${CAT_KEYS.map(k => `<span><i style="background:${CATS[k].color}"></i>${CATS[k].name}</span>`).join('')}
+            <span><i class="cal-legend-daily"></i>日常待办</span>
           </div>
         </div>
         <div class="cal-grid" id="calGrid">
           <div class="cal-wdrow">${wd.map(x => `<div class="cal-wd">${x}</div>`).join('')}</div>
           ${grid}
-          <p class="cal-tip">拖动任务可改日期；点日期看当天任务；「今天」清单在左侧。</p>
+          <p class="cal-tip">拖动任务 / 日常待办可改日期；点日期看当天安排；点日常待办的色条可直接勾掉。</p>
         </div>
         <div class="cal-daypanel" id="calDayPanel">
           <div class="cal-day-head2">
             <b>${Number(state.calSelDay.slice(8))} 日 · 周${'日一二三四五六'[selDate.getDay()]}${state.calSelDay === t ? '（今天）' : ''}<span class="cal-day-lunar">${esc(selLunar)}</span></b>
             <span>${openN ? openN + ' 项待办' : '没有待办'}</span>
           </div>
-          <div class="cal-daylist">${dayList}</div>
+          <div class="cal-daylist">
+            <div class="cal-sec-label">任务</div>
+            ${dayTasksHtml}
+            <div class="cal-sec-label daily">日常待办
+              <span class="cal-sec-add-wrap"><input class="cal-sec-add" id="calDailyAdd" placeholder="＋ 加一条，回车保存"></span>
+            </div>
+            ${dayDailyHtml}
+          </div>
         </div>
       </div>`;
   }
@@ -1634,6 +1719,12 @@
     grid.addEventListener('click', e => {
       const more = e.target.closest('[data-more]');
       if (more) { state.calSelDay = more.getAttribute('data-more'); renderContent(); scrollDayPanel(); return; }
+      const dchip = e.target.closest('.cal-event.cal-daily');
+      if (dchip) {
+        // 日历上的日常待办：点一下 = 勾掉 / 取消勾掉
+        toggleDailyDone(dchip.getAttribute('data-daily-id'));
+        return;
+      }
       const chip = e.target.closest('.cal-event');
       if (chip) {
         const id = chip.getAttribute('data-id');
@@ -1659,15 +1750,42 @@
     const demoBtn = $('#calDemo');
     if (demoBtn) demoBtn.onclick = () => loadDemo();
 
-    // 当日清单：勾选完成 / 打开详情
+    // 当日面板：就地添加日常待办
+    const dAdd = $('#calDailyAdd');
+    if (dAdd) dAdd.addEventListener('keydown', function (e) {
+      if (e.isComposing) return;
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      const item = pushDaily(state.calSelDay, this.value);
+      if (!item) { toast('先写点什么再加'); this.focus(); return; }
+      renderAll();
+      const nd = $('#calDailyAdd');
+      if (nd) nd.focus();
+      toast('已添加 · ' + dailyDateLabel(state.calSelDay).replace(/ · .*$/, '') + '的日常待办');
+    });
+
+    // 当日清单：勾选完成 / 打开详情 / 日常待办操作
     const panel = $('#calDayPanel');
     if (panel) panel.addEventListener('click', e => {
       const row = e.target.closest('.cal-task');
       if (!row) return;
-      const id = row.getAttribute('data-id');
-      const virtual = row.getAttribute('data-virtual') === '1';
       const btn = e.target.closest('[data-act]');
       const act = btn ? btn.getAttribute('data-act') : null;
+
+      if (row.classList.contains('cal-daily-row')) {
+        const id = row.getAttribute('data-daily-id');
+        if (act === 'dtoggle') { toggleDailyDone(id); return; }
+        if (act === 'ddel') { deleteDaily(id); return; }
+        if (act === 'dtext') {
+          const item = state.daily.find(x => x.id === id);
+          const el = row.querySelector('.t-title');
+          if (item && el && el.getAttribute('contenteditable') !== 'true') editDailyText(el, item);
+        }
+        return;
+      }
+
+      const id = row.getAttribute('data-id');
+      const virtual = row.getAttribute('data-virtual') === '1';
       if (act === 'toggle') {
         if (virtual) { toast('预览期不能直接勾选，完成的是本期任务'); return; }
         toggleDone(id);
@@ -1677,8 +1795,16 @@
       openTask(id);
     });
 
-    // 拖拽改期
+    // 拖拽改期：任务改 due，日常待办改 date（dragId 前缀 D| 区分）
     grid.addEventListener('dragstart', e => {
+      const dchip = e.target.closest('.cal-event.cal-daily');
+      if (dchip) {
+        dragId = 'D|' + dchip.getAttribute('data-daily-id');
+        dchip.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        try { e.dataTransfer.setData('text/plain', dragId); } catch (err) {}
+        return;
+      }
       const chip = e.target.closest('.cal-event');
       if (!chip || chip.getAttribute('data-virtual') === '1') return;
       dragId = chip.getAttribute('data-id');
@@ -1707,8 +1833,26 @@
       dragId = null;
       if (!day || !id) return;
       e.preventDefault();
-      const t = getTask(id);
       const target = day.getAttribute('data-day');
+
+      // 日常待办：拖到某天 = 挪到那天
+      if (id.indexOf('D|') === 0) {
+        const it = state.daily.find(x => x.id === id.slice(2));
+        if (!it || it.date === target) return;
+        const oldDate = it.date;
+        it.date = target;
+        it.updatedAt = Date.now();
+        saveDaily();
+        state.calSelDay = target;
+        renderAll();
+        toast('日常待办已挪到 ' + fmtDue(target), {
+          label: '撤销',
+          onClick: function () { it.date = oldDate; it.updatedAt = Date.now(); saveDaily(); renderAll(); }
+        });
+        return;
+      }
+
+      const t = getTask(id);
       if (!t || t.due === target) return;
       const old = t.due;
       t.due = target;
@@ -1727,13 +1871,14 @@
     if (p) p.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }
 
-  /* ---------------- 日常记录（独立于任务，不参与导出） ---------------- */
+  /* ---------------- 日常待办（独立于任务，不参与导出，但会出现在日历里） ---------------- */
   function dailyItems(q) {
     q = String(q || '').trim().toLowerCase();
     const list = q ? state.daily.filter(x => x.text.toLowerCase().indexOf(q) >= 0) : state.daily.slice();
-    // 日期倒序；同一天内按记录时间正序，读起来像当天的工作流水
+    // 日期倒序；同一天内未完成在前，其余按记录时间正序
     return list.sort((a, b) => {
       if (a.date !== b.date) return a.date < b.date ? 1 : -1;
+      if (!!a.done !== !!b.done) return a.done ? 1 : -1;
       return (a.time || '').localeCompare(b.time || '') || (a.createdAt - b.createdAt);
     });
   }
@@ -1757,45 +1902,50 @@
       if (!last || last.date !== x.date) groups.push({ date: x.date, items: [x] });
       else last.items.push(x);
     });
-    const todayN = state.daily.filter(x => x.date === todayStr()).length;
+    const todayList = state.daily.filter(x => x.date === todayStr());
+    const todayOpen = todayList.filter(x => !x.done).length;
     const q = state.search.trim();
 
     let body;
     if (!list.length) {
       body = q
-        ? `<div class="daily-empty"><b>没有匹配的记录</b><p>换个关键词，或者清空搜索框。</p></div>`
+        ? `<div class="daily-empty"><b>没有匹配的待办</b><p>换个关键词，或者清空搜索框。</p></div>`
         : `<div class="daily-empty">
              <div class="daily-empty-ico"><svg><use href="#i-note"/></svg></div>
-             <b>还没有日常记录</b>
-             <p>每天做完事，随手记一条：推进了什么、卡在哪、明天先做什么。</p>
-             <p class="daily-empty-warn">只保存在本机，不会进入 JSON / CSV 导出</p>
+             <b>还没有日常待办</b>
+             <p>把每天固定要做的小事放这儿——早会、日报、巡检、收拾工位。</p>
+             <p class="daily-empty-warn">不占任务列表，不会进入 JSON / CSV 导出；但会显示在日历对应日期上。</p>
            </div>`;
     } else {
-      body = groups.map(g => `
+      body = groups.map(g => {
+        const doneN = g.items.filter(x => x.done).length;
+        return `
         <section class="daily-group">
           <div class="daily-ghead">
             <b>${esc(dailyDateLabel(g.date))}</b>
-            <span>${g.items.length} 条</span>
+            <span>${doneN ? doneN + '/' : ''}${g.items.length}${doneN === g.items.length ? ' · 全部完成' : ''}</span>
           </div>
           ${g.items.map(x => `
-            <div class="daily-item" data-id="${esc(x.id)}">
+            <div class="daily-item${x.done ? ' done' : ''}" data-id="${esc(x.id)}">
+              <button class="daily-check" data-role="toggle" title="${x.done ? '标记未完成' : '标记完成'}"><svg><use href="#i-check"/></svg></button>
               <span class="daily-time">${esc(x.time || '—')}</span>
               <div class="daily-text" data-role="text" title="点击可编辑">${esc(x.text)}</div>
-              <button class="daily-del" data-role="del" title="删除这条记录"><svg><use href="#i-close"/></svg></button>
+              <button class="daily-del" data-role="del" title="删除这条待办"><svg><use href="#i-close"/></svg></button>
             </div>`).join('')}
-        </section>`).join('');
+        </section>`;
+      }).join('');
     }
 
     return `<div class="daily-wrap">
       <div class="daily-add">
         <div class="daily-add-head">
-          <label for="dailyDate">记录到</label>
+          <label for="dailyDate">加到</label>
           <input type="date" id="dailyDate" value="${esc(state.dailyDate)}">
-          <span class="daily-today-hint">${todayN ? '今天已记 ' + todayN + ' 条' : '今天还没有记录'}</span>
+          <span class="daily-today-hint">${todayOpen ? '今天还有 ' + todayOpen + ' 项没做' : (todayList.length ? '今天都完成了' : '今天还没有安排')}</span>
         </div>
         <div class="daily-input-row">
-          <textarea id="dailyText" rows="1" placeholder="记录今天做了什么…"></textarea>
-          <button class="btn-primary" id="dailyAdd">记一条</button>
+          <textarea id="dailyText" rows="1" placeholder="写一条日常待办，回车保存">${esc(state.dailyDraft)}</textarea>
+          <button class="btn-primary" id="dailyAdd">添加</button>
         </div>
         <div class="daily-tip">Enter 保存 · Shift+Enter 换行 · 点正文可以就地修改</div>
       </div>
@@ -1811,28 +1961,19 @@
     const dateEl = $('#dailyDate');
 
     function addItem() {
-      const text = ta.value.replace(/\r/g, '').replace(/^\s+|\s+$/g, '');
-      if (!text) { toast('先写点什么再记录'); ta.focus(); return; }
+      const text = ta.value;
       const date = (dateEl && dateEl.value) || todayStr();
+      const item = pushDaily(date, text);
+      if (!item) { toast('先写点什么再加'); ta.focus(); return; }
       state.dailyDate = date;
-      const now = new Date();
-      const p = n => String(n).padStart(2, '0');
-      state.daily.push({
-        id: uid(),
-        date: date,
-        time: p(now.getHours()) + ':' + p(now.getMinutes()),
-        text: text,
-        createdAt: Date.now(),
-        updatedAt: Date.now()
-      });
-      saveDaily();
+      state.dailyDraft = '';
       renderAll();
       const nt = $('#dailyText');
       if (nt) nt.focus();
       const n = state.daily.filter(x => x.date === date).length;
       toast(date === todayStr()
-        ? '已记录 · 今天第 ' + n + ' 条'
-        : '已记录到 ' + dailyDateLabel(date).replace(/ · .*$/, '') + ' · 该日 ' + n + ' 条');
+        ? '已添加 · 今天第 ' + n + ' 项'
+        : '已加到 ' + dailyDateLabel(date).replace(/ · .*$/, '') + ' · 该日 ' + n + ' 项');
     }
 
     if (dateEl) dateEl.addEventListener('change', function () { state.dailyDate = this.value || todayStr(); });
@@ -1842,14 +1983,25 @@
         if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); addItem(); }
       });
       ta.addEventListener('input', function () {
+        state.dailyDraft = this.value;
         this.style.height = 'auto';
         this.style.height = Math.min(this.scrollHeight, 120) + 'px';
       });
+      if (state.dailyDraft) {
+        ta.style.height = 'auto';
+        ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
+      }
     }
     const addBtn = $('#dailyAdd');
     if (addBtn) addBtn.addEventListener('click', addItem);
 
     wrap.addEventListener('click', function (e) {
+      const tog = e.target.closest('[data-role="toggle"]');
+      if (tog) {
+        const row = tog.closest('.daily-item');
+        if (row) toggleDailyDone(row.getAttribute('data-id'));
+        return;
+      }
       const del = e.target.closest('[data-role="del"]');
       if (del) {
         const row = del.closest('.daily-item');
@@ -1890,7 +2042,9 @@
       item.text = text;
       item.updatedAt = Date.now();
       saveDaily();
-      toast('已更新这条记录');
+      // 日历视图里格子里的色条也显示这条文字，需要整体重绘；日常视图只改了这一行，不重绘保住滚动位置
+      if (state.view === 'calendar') renderAll();
+      toast('已更新这条日常待办');
     }
     el.addEventListener('blur', function () { finish(true); }, { once: true });
     el.addEventListener('keydown', function (e) {
@@ -1907,7 +2061,7 @@
     state.dailyPurged[id] = Date.now(); // 墓碑：别的标签页不会把它复活
     saveDaily();
     renderAll();
-    toast('已删除一条记录', {
+    toast('已删除一条日常待办', {
       label: '撤销',
       onClick: function () {
         // 撤销要压过墓碑：否则合并时会被当成「已删除」再删一次
@@ -1937,16 +2091,19 @@
     }
     if (state.view === 'daily') {
       const q = state.search.trim();
-      const todayN = state.daily.filter(x => x.date === todayStr()).length;
-      sub = '共 ' + state.daily.length + ' 条记录 · 今天 ' + todayN + ' 条' +
-        (q ? ' · 搜索「' + q + '」命中 ' + dailyItems(q).length + ' 条' : '');
+      const todayOpen = state.daily.filter(x => x.date === todayStr() && !x.done).length;
+      const doneAll = state.daily.filter(x => x.done).length;
+      sub = '共 ' + state.daily.length + ' 项 · 今天 ' + todayOpen + ' 项未完成' +
+        (doneAll ? ' · 累计完成 ' + doneAll + ' 项' : '') +
+        (q ? ' · 搜索「' + q + '」命中 ' + dailyItems(q).length + ' 项' : '');
     } else if (state.search.trim()) {
       sub = '搜索「' + state.search.trim() + '」· 命中 ' + list.length + ' 条';
     } else if (state.view === 'stats') {
       sub = meta.sub;
     } else if (state.view === 'calendar') {
       const b = calMonthBounds(state.calMonth);
-      const mOpen = aliveOpen().filter(x => x.due && x.due >= b.from && x.due <= b.to).length;
+      const mOpen = aliveOpen().filter(x => x.due && x.due >= b.from && x.due <= b.to).length +
+        state.daily.filter(x => !x.done && x.date >= b.from && x.date <= b.to).length;
       const mOver = aliveOpen().filter(x => x.due && x.due < todayStr()).length;
       sub = state.calMonth.replace('-', ' 年 ') + ' 月 · 本月 ' + mOpen + ' 项待办' + (mOver ? '，已逾期 ' + mOver + ' 项' : '');
     } else if (state.view === 'archive') {

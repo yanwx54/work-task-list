@@ -1403,6 +1403,28 @@ kbd {
 .cal-event.done .cal-edot { background: var(--line-strong); }
 .cal-event.virtual { border: 1px dashed color-mix(in srgb, var(--cc) 45%, transparent); background: transparent; color: color-mix(in srgb, var(--cc) 60%, var(--text-2)); }
 .cal-event.dragging { opacity: .35; }
+
+/* 日常待办色片：虚线圆点 + 灰底，和任务区分 */
+.cal-event.cal-daily {
+  --cc: var(--muted);
+  background: var(--track-2);
+  color: var(--text-2);
+  cursor: pointer;
+}
+.cal-event.cal-daily .cal-edot {
+  background: transparent;
+  border: 1.4px solid var(--muted);
+  width: 7px;
+  height: 7px;
+}
+.cal-event.cal-daily:hover { background: var(--track); }
+.cal-event.cal-daily.done { color: var(--muted); }
+.cal-event.cal-daily.done .cal-edot { background: var(--muted); border-color: var(--muted); }
+.cal-legend-daily {
+  background: transparent !important;
+  border: 1.4px solid var(--muted);
+  border-radius: 50%;
+}
 /* 不支持 color-mix 的旧浏览器：给个中性底 */
 @supports not (background: color-mix(in srgb, red 10%, blue)) {
   .cal-event { background: var(--track); color: var(--text-2); }
@@ -1455,6 +1477,49 @@ kbd {
 .cal-task .t-due { color: var(--muted); font-size: 11.8px; display: inline-flex; align-items: center; gap: 4px; }
 .cal-task .t-due svg { width: 12.5px; height: 12.5px; }
 .cal-day-empty { padding: 14px 2px; font-size: 12.5px; color: var(--muted); }
+
+/* 当日面板：任务 / 日常待办 两段 */
+.cal-sec-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: .4px;
+  padding: 10px 2px 4px;
+}
+.cal-sec-label:first-child { padding-top: 2px; }
+.cal-sec-label.daily { color: var(--text-2); }
+.cal-sec-add-wrap { flex: 1; display: flex; justify-content: flex-end; }
+.cal-sec-add {
+  width: 170px;
+  max-width: 55%;
+  height: 24px;
+  border: 1px dashed var(--line-strong);
+  background: transparent;
+  border-radius: 6px;
+  padding: 0 8px;
+  font-size: 11.5px;
+  color: var(--text);
+}
+.cal-sec-add::placeholder { color: var(--placeholder); }
+.cal-sec-add:focus { outline: none; border-style: solid; border-color: var(--brand); background: var(--panel); }
+.cal-daily-row .t-title { cursor: text; }
+.cal-daily-row.done .t-title { color: var(--muted); text-decoration: line-through; font-weight: 400; }
+.t-act-btn {
+  flex: 0 0 auto;
+  width: 24px; height: 24px;
+  border: 0; background: transparent;
+  border-radius: 6px;
+  color: var(--muted);
+  display: grid; place-items: center;
+  opacity: 0;
+  transition: opacity .12s, background .12s;
+}
+.cal-task:hover .t-act-btn { opacity: 1; }
+.t-act-btn svg { width: 12px; height: 12px; }
+.t-act-btn:hover { background: var(--danger-soft); color: var(--danger-text); }
 
 @media (max-width: 880px) {
   .cal-day { min-height: 74px; padding: 4px 3px; }
@@ -1522,6 +1587,20 @@ kbd {
   border-radius: var(--r-sm);
 }
 .daily-item:hover { background: var(--panel); border-color: var(--line); }
+.daily-check {
+  flex: none; width: 18px; height: 18px; margin-top: 1px;
+  border-radius: 5px;
+  border: 1.6px solid var(--check-bd);
+  background: transparent;
+  display: grid; place-items: center;
+  color: transparent; padding: 0;
+  transition: border-color .12s, background .12s, color .12s;
+}
+.daily-check svg { width: 11px; height: 11px; stroke-width: 3; }
+.daily-check:hover { border-color: var(--brand); }
+.daily-item.done .daily-check { background: var(--brand); border-color: var(--brand); color: #fff; }
+.daily-item.done .daily-text { color: var(--muted); text-decoration: line-through; }
+.daily-item.done .daily-time { color: var(--placeholder); }
 .daily-time {
   flex: none; width: 42px; padding-top: 1px;
   font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums;

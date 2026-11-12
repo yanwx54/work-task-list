@@ -26,10 +26,11 @@ Project09 是 Flask + SQLite 的本地台账（重，带报表和工时统计）
 - 界面偏好（视图/布局/筛选/排序/统计范围/主题）：`work-tasks.prefs.v1`
 - 每日提醒状态（enabled / last 已提醒日期）：`work-tasks.remind.v1`
 - 每日自动快照（保留 3 份）：`work-tasks.backup.v1`
-- **日常记录（独立存储）**：`work-tasks.daily.v1`（结构：`{ version, items, purged }`，
-  item = `{ id, date:'YYYY-MM-DD', time:'HH:MM', text, createdAt, updatedAt }`）。
-  用户要求：**日常记录不进 JSON / CSV 导出**，所以它绝不能混进 `work-tasks.v1` 或导出函数；
+- **日常待办（独立存储）**：`work-tasks.daily.v1`（结构：`{ version, items, purged }`，
+  item = `{ id, date:'YYYY-MM-DD', time:'HH:MM', text, done, doneAt, createdAt, updatedAt }`）。
+  用户要求：**日常待办不进 JSON / CSV 导出**，所以它绝不能混进 `work-tasks.v1` 或导出函数；
   只跟着每日快照一起备份（`saveBackup` 的 `daily` 字段），恢复时只增不覆盖。
+  但**要显示在日历里**（见下方核心设计决定）。
 
 ## 核心设计决定（改动前先看）
 - **默认首页 = 日历**（用户 2026-11-11 明确要求：首页月视图放任务，下一页才是列表）。
@@ -60,14 +61,24 @@ Project09 是 Flask + SQLite 的本地台账（重，带报表和工时统计）
   Intl 不可用时整体静默降级。移动端只留节日。
   **位置：日期数字右侧同行**（`.cal-day-head` 内 flex，用户点名要这样给任务省一行）；
   因此每格任务上限是 **4 条**（`items.slice(0, 4)`），不是 3。
-- **日常记录 = 独立数据 + 独立视图**（`state.view === 'daily'`，渲染入口 `renderDailyPanel()` /
-  `bindDailyPanel()`，见 VIEW_META.daily、viewBase 的空数组、renderContent 的 daily 分支）。
+- **日常待办 = 独立数据 + 独立视图 + 出现在日历里**（用户 2026-11-12 定名"日常待办"，
+  并要求"这个也要加到日历里"；曾叫"日常记录"已改名。`state.view === 'daily'`，
+  渲染入口 `renderDailyPanel()` / `bindDailyPanel()`，见 VIEW_META.daily、viewBase 的空数组、
+  renderContent 的 daily 分支）。
+  日历集成：`calDailyByDay()` + `calDailyChipHTML()` 在格子里铺 `.cal-event.cal-daily`
+  （灰底 + 空心圆点，与任务共享每格 4 条上限，超出计入"还有 N 项"）；
+  **点色条 = `toggleDailyDone` 直接勾掉**；拖拽用 `dragId = 'D|' + id` 前缀区分，
+  drop 改 `it.date`（带撤销）；当日面板分「任务 / 日常待办」两段，
+  日常段带就地添加框 `#calDailyAdd`（pushDaily 落选中日）、勾选 `dtoggle`、删除 `ddel`。
+  侧栏 `daily` 计数 = 今天未完成数；`calendar` 计数与头部"本月 N 项待办"都含日常未完成。
   存储函数 `loadDaily / saveDaily / parseDaily / normalizeDaily`，**saveDaily 不 debounce**：
   都是离散操作，立即落盘，避免 120ms 内关标签页丢记录（多标签页靠 `mergeRemote` 合并）。
   删除写墓碑 `state.dailyPurged[id]`；**撤销必须把 `updatedAt` 提到墓碑时间之后**
   （`Math.max(Date.now(), tombstone + 1)`），否则合并时又被墓碑删掉——踩过一次。
-  正文就地编辑用 contenteditable（Enter 保存 / Shift+Enter 换行 / Esc 放弃）。
-  不要在 `bindDailyPanel` 里 autofocus：会抢搜索框焦点（已在导航点击处单独 focus）。
+  正文就地编辑用 contenteditable（Enter 保存 / Shift+Enter 换行 / Esc 放弃）；
+  在日历视图里编辑后要 `renderAll()`（格子里也显示该文字），日常视图只重绘该行保滚动。
+  输入框草稿存 `state.dailyDraft`（重绘不丢）。不要在 `bindDailyPanel` 里 autofocus：
+  会抢搜索框焦点（已在导航点击处单独 focus）。
 
 ## 自检方式
 本机有 chromium（`C:/Users/yanwx/AppData/Local/ms-playwright/chromium-1200/chrome-win64/chrome.exe`）
@@ -80,4 +91,6 @@ path.resolve 后再 startsWith 校验目录，Windows 下 path.join 是反斜杠
 ## ⚠️ 文件编辑铁律
 **改源码只用 edit 工具。绝不用 PowerShell 的 Get-Content/Set-Content 读写含中文的文件**——
 PowerShell 按 ANSI 码页读写，会整篇损坏 UTF-8（2026-11-11 实测把 app.js 全毁了）。
+连 `Get-Content` 只读 + 输出到终端也会显示乱码（2026-11-12 再次踩到），
+读中文一律用 read 工具 / Select-String。
 万一损坏：`cmd /c "git show HEAD:app.js > app.js"` 原始字节恢复（git checkout/restore 会被安全网拦）。
